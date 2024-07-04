@@ -190,7 +190,7 @@ sealed class Tools_Tests
         {
             { UsbSupError.USBSUP_XFER_OK, Errno.SUCCESS },
             { UsbSupError.USBSUP_XFER_STALL, Errno.EPIPE },
-            { UsbSupError.USBSUP_XFER_DNR, Errno.ETIME },
+            { UsbSupError.USBSUP_XFER_DNR, Errno.EPIPE },
             { UsbSupError.USBSUP_XFER_CRC, Errno.EILSEQ },
             { UsbSupError.USBSUP_XFER_NAC, Errno.EPROTO },
             { UsbSupError.USBSUP_XFER_UNDERRUN, Errno.EREMOTEIO },
