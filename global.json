@@ -1,10 +1,11 @@
 {
   "sdk": {
-    "version": "8.0.403",
+    "version": "9.0.203",
     "allowPrerelease": false,
     "rollForward": "latestPatch"
   },
   "msbuild-sdks": {
-    "WixToolset.Sdk": "5.0.2"
+    "MSTest.Sdk": "3.8.3",
+    "WixToolset.Sdk": "6.0.0"
   }
 }

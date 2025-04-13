@@ -10,18 +10,27 @@ using System.Text.RegularExpressions;
 
 namespace Usbipd.Automation;
 
-public readonly record struct VidPid
+#if NETSTANDARD
+public
+#endif
+readonly record struct VidPid
     : IComparable<VidPid>
 {
 #if !NETSTANDARD
     [JsonConstructor]
-    public VidPid(ushort vid, ushort pid) => (Vid, Pid) = (vid, pid);
 #endif
+    public VidPid(ushort vid, ushort pid)
+    {
+        (Vid, Pid) = (vid, pid);
+    }
 
     public ushort Vid { get; init; }
     public ushort Pid { get; init; }
 
-    public override readonly string ToString() => $"{Vid:x4}:{Pid:x4}";
+    public override readonly string ToString()
+    {
+        return $"{Vid:x4}:{Pid:x4}";
+    }
 
     public static bool TryParse(string input, out VidPid vidPid)
     {
@@ -47,39 +56,41 @@ public readonly record struct VidPid
 
     public static VidPid Parse(string input)
     {
-        if (!TryParse(input, out var pidVid))
-        {
-            throw new FormatException();
-        }
-        return pidVid;
+        return TryParse(input, out var pidVid) ? pidVid : throw new FormatException();
     }
 
-    public static VidPid FromHardwareOrInstanceId(string input)
+    internal static VidPid FromHardwareOrInstanceId(string input)
     {
         // Examples:
         //   VID_80EE&PID_CAFE
         //   USB\\VID_1BCF&PID_28A6\\6&17A81E1D&0&8
         var match = Regex.Match(input, "VID_([0-9a-fA-F]{4})&PID_([0-9a-fA-F]{4})([^0-9a-fA-F]|$)");
-        if (!match.Success
-            || !ushort.TryParse(match.Groups[1].Value, NumberStyles.AllowHexSpecifier, null, out var vid)
-            || !ushort.TryParse(match.Groups[2].Value, NumberStyles.AllowHexSpecifier, null, out var pid))
-        {
-            throw new FormatException();
-        }
-        return new()
-        {
-            Vid = vid,
-            Pid = pid,
-        };
+        return match.Success
+            && ushort.TryParse(match.Groups[1].Value, NumberStyles.AllowHexSpecifier, null, out var vid)
+            && ushort.TryParse(match.Groups[2].Value, NumberStyles.AllowHexSpecifier, null, out var pid)
+            ? new()
+            {
+                Vid = vid,
+                Pid = pid,
+            }
+            : throw new FormatException();
     }
 
-    public string? Vendor => this.GetVendor();
+    public string? Vendor => Descriptions.Vendor;
 
-    public string? Product => this.GetProduct();
+    public string? Product => Descriptions.Product;
+
+#if !NETSTANDARD
+    public
+#endif
+    (string? Vendor, string? Product) Descriptions => this.GetVendorProduct(true);
 
     #region IComparable<VidPid>
 
-    public readonly int CompareTo(VidPid other) => ((uint)Vid << 16 | Pid).CompareTo((uint)other.Vid << 16 | other.Pid);
+    public readonly int CompareTo(VidPid other)
+    {
+        return (((uint)Vid << 16) | Pid).CompareTo(((uint)other.Vid << 16) | other.Pid);
+    }
 
     public static bool operator <(VidPid left, VidPid right)
     {

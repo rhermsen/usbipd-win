@@ -31,7 +31,7 @@ sealed class Program_Tests
         mock.Setup(m => m.License(
             It.IsNotNull<IConsole>(), It.IsAny<CancellationToken>())).Returns(Task.FromResult((ExitCode)0x0badf00d));
 
-        Assert.ThrowsException<UnexpectedResultException>(() =>
+        Assert.ThrowsExactly<UnexpectedResultException>(() =>
         {
             Test(ExitCode.Success, mock, "license");
         });
@@ -44,17 +44,17 @@ sealed class Program_Tests
         mock.Setup(m => m.License(
             It.IsNotNull<IConsole>(), It.IsAny<CancellationToken>())).Throws<NotImplementedException>();
 
-        var exception = Assert.ThrowsException<AggregateException>(() =>
+        var exception = Assert.ThrowsExactly<AggregateException>(() =>
         {
             Test(ExitCode.Success, mock, "license");
         });
-        Assert.IsInstanceOfType(exception.InnerException, typeof(NotImplementedException));
+        Assert.IsInstanceOfType<NotImplementedException>(exception.InnerException);
     }
 
     [TestMethod]
     public void CompletionGuard_DoesNotThrow()
     {
         var completions = Program.CompletionGuard(null!, null!);
-        Assert.IsTrue(completions.SequenceEqual(Array.Empty<string>()));
+        Assert.IsTrue(completions.SequenceEqual([]));
     }
 }

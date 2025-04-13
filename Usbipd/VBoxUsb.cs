@@ -22,17 +22,18 @@ static class VBoxUsb
         {
             {
                 var output = new byte[Marshal.SizeOf<UsbSupVersion>()];
-                await dev.IoControlAsync(SUPUSB_IOCTL.GET_VERSION, null, output);
+                _ = await dev.IoControlAsync(SUPUSB_IOCTL.GET_VERSION, null, output);
                 BytesToStruct(output, out UsbSupVersion version);
                 if ((version.major != USBDRV_MAJOR_VERSION) || (version.minor < USBDRV_MINOR_VERSION))
                 {
-                    throw new NotSupportedException($"device version not supported: {version.major}.{version.minor}, expected {USBDRV_MAJOR_VERSION}.{USBDRV_MINOR_VERSION}");
+                    throw new NotSupportedException(
+                        $"device version not supported: {version.major}.{version.minor}, expected {USBDRV_MAJOR_VERSION}.{USBDRV_MINOR_VERSION}");
                 }
             }
             {
                 var claimDev = new UsbSupClaimDev();
                 var output = new byte[Marshal.SizeOf<UsbSupClaimDev>()];
-                await dev.IoControlAsync(SUPUSB_IOCTL.USB_CLAIM_DEVICE, StructToBytes(claimDev), output);
+                _ = await dev.IoControlAsync(SUPUSB_IOCTL.USB_CLAIM_DEVICE, StructToBytes(claimDev), output);
                 BytesToStruct(output, out claimDev);
                 if (!claimDev.fClaimed)
                 {

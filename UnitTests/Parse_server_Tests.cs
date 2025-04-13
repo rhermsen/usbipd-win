@@ -35,7 +35,7 @@ sealed class Parse_server_Tests
         mock.Setup(m => m.Server(It.Is<string[]>(array => array.SequenceEqual(testArgs)),
             It.IsNotNull<IConsole>(), It.IsAny<CancellationToken>())).Returns(Task.FromResult(ExitCode.Success));
 
-        Test(ExitCode.Success, mock, testArgs.Prepend("server").ToArray());
+        Test(ExitCode.Success, mock, ["server", .. testArgs]);
     }
 
     [TestMethod]

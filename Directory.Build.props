@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!--
 SPDX-FileCopyrightText: 2021 Frans van Dorsselaer
 
@@ -7,65 +7,65 @@ SPDX-License-Identifier: GPL-3.0-only
 <Project>
 
   <PropertyGroup>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' != 'true'">false</ContinuousIntegrationBuild>
+
     <!-- Use the latest .NET SDK -->
-    <!-- This product requires Windows 10 (Windows Server 2019) or higher -->
-    <MainTargetFramework>net8.0-windows10.0.17763</MainTargetFramework>
-    <GitVersionTargetFramework>net8.0</GitVersionTargetFramework>
-  </PropertyGroup>
-
-  <!-- Sane defaults; override in project where needed -->
-
-  <PropertyGroup Condition="$(TargetFramework) == 'netstandard2.0'">
-    <!-- For PowerShell, we support everything -->
-    <Platforms>AnyCPU</Platforms>
-    <Platform>AnyCPU</Platform>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="$(TargetFramework) != 'netstandard2.0'">
-    <!-- This product only supports x64 (the only architecture supported by VBoxUsb) -->
-    <Platforms>x64</Platforms>
-    <Platform>x64</Platform>
-    <IsAotCompatible>true</IsAotCompatible>
-  </PropertyGroup>
-
-  <PropertyGroup>
+    <MainTargetFramework>net9.0</MainTargetFramework>
+    <!-- This product requires a supported version of Windows 10 or Windows Server 2019 -->
+    <MinimumWindowsVersion>10.0.17763</MinimumWindowsVersion>
+    <!-- This product only supports x64 and arm64 (the only architectures supported by VBoxUsb) -->
+    <Platforms>x64;ARM64</Platforms>
+    <EnableDynamicPlatformResolution>true</EnableDynamicPlatformResolution>
     <!-- This allows building on Linux; however, building the installer requires Windows -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
 
     <!-- Use the latest C# language standard -->
-    <LangVersion>12.0</LangVersion>
+    <LangVersion>13.0</LangVersion>
+    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
     <!-- Be very strict -->
     <WarningLevel>9999</WarningLevel>
-    <Nullable>enable</Nullable>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisLevel>latest-all</AnalysisLevel>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CheckForOverflowUnderflow Condition="'$(Configuration)' == 'Debug'">true</CheckForOverflowUnderflow>
 
     <!-- Common defaults -->
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en-US</SatelliteResourceLanguages>
     <SelfContained>false</SelfContained>
     <IsPackable>false</IsPackable>
     <IsPublishable>false</IsPublishable>
     <GenerateDependencyFile>false</GenerateDependencyFile>
-    <AccelerateBuildsInVisualStudio>true</AccelerateBuildsInVisualStudio>
+    <!-- See https://github.com/dotnet/roslyn/issues/41640 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PublishDocumentationFiles>false</PublishDocumentationFiles>
+    <NoWarn>CS1591</NoWarn>
 
     <!-- Deterministic builds -->
-    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <RestoreLockedMode Condition="'$(GITHUB_ACTIONS)' == 'true'">true</RestoreLockedMode>
-    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <RestoreLockedMode Condition="$(ContinuousIntegrationBuild)">true</RestoreLockedMode>
 
+    <!-- Assembly metadata -->
     <Product>usbipd-win</Product>
     <Company>Frans van Dorsselaer</Company>
-    <Copyright>Copyright (C) $([System.DateTime]::UtcNow.ToString("yyyy"))  $(Company)</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="GitVersion.MsBuild" PrivateAssets="all" />
-    <Compile Include="$(MSBuildThisFileDirectory)Fake_GitVersionInformation.cs" Condition=" '$(MSBuildRuntimeType)' != 'Core' " />
+    <PackageReference Include="Dorssel.GitVersion.MsBuild" PrivateAssets="all" />
   </ItemGroup>
+
+  <Target Name="SetCopyright" AfterTargets="GetVersion">
+    <PropertyGroup>
+      <!-- For deterministic builds, use the commit year as the copyright year. -->
+      <CopyrightYear Condition="$(ContinuousIntegrationBuild)">$([System.DateTime]::Parse($(GitVersion_CommitDate)).ToString("yyyy"))</CopyrightYear>
+      <CopyrightYear Condition="!$(ContinuousIntegrationBuild)">$([System.DateTime]::UtcNow.ToString("yyyy"))</CopyrightYear>
+      <Copyright>Copyright (C) $(CopyrightYear)  $(Company)</Copyright>
+    </PropertyGroup>
+  </Target>
 
 </Project>

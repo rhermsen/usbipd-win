@@ -17,10 +17,12 @@
 *.yml   text
 
 *.sln   text
+*.snk   binary
 
 *.csproj   text
 *.cs       text eol=crlf
 *.props    text
+*.targets  text
 
 *.wixproj   text
 *.wxs       text
@@ -29,7 +31,7 @@
 *.png       binary
 *.xcf       binary
 
-usb.ids   text eol=lf 
+usb.ids   text eol=lf
 
 # VBoxUsb drivers
 *.cat   binary

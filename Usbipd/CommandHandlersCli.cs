@@ -6,6 +6,7 @@
 using System.CommandLine;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Net;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Usbipd.Automation;
@@ -97,19 +98,14 @@ sealed partial class CommandHandlers : ICommandHandlers
         return Task.FromResult(ExitCode.Success);
     }
 
-    static string GetDescription(UsbDevice device, bool usbids)
+    static string GetDescription(UsbDevice device, bool usbIds)
     {
-        if (usbids)
+        if (usbIds)
         {
-            var vendor = device.HardwareId.Vendor;
-            if (vendor is not null)
-            {
-                return $"{vendor}, {device.HardwareId.Product ?? ConfigurationManager.UnknownDevice}";
-            }
-            else
-            {
-                return ConfigurationManager.UnknownDevice;
-            }
+            var (vendor, product) = device.HardwareId.Descriptions;
+            return vendor is not null
+                ? $"{vendor}, {product ?? ConfigurationManager.UnknownDevice}"
+                : ConfigurationManager.UnknownDevice;
         }
         else
         {
@@ -117,7 +113,7 @@ sealed partial class CommandHandlers : ICommandHandlers
         }
     }
 
-    Task<ExitCode> ICommandHandlers.List(bool usbids, IConsole console, CancellationToken cancellationToken)
+    Task<ExitCode> ICommandHandlers.List(bool usbIds, IConsole console, CancellationToken cancellationToken)
     {
         var allDevices = UsbDevice.GetAll().ToList();
         console.WriteLine("Connected:");
@@ -125,30 +121,13 @@ sealed partial class CommandHandlers : ICommandHandlers
         foreach (var device in allDevices.Where(d => d.BusId.HasValue).OrderBy(d => d.BusId.GetValueOrDefault()))
         {
             Debug.Assert(device.BusId.HasValue);
-            string state;
-            if (device.IPAddress is not null)
-            {
-                state = "Attached";
-            }
-            else if (device.Guid is not null)
-            {
-                state = device.IsForced ? "Shared (forced)" : "Shared";
-            }
-            else if (device.BusId.Value.IsIncompatibleHub)
-            {
-                state = "Incompatible hub";
-            }
-            else if (Policy.IsAutoBindAllowed(device))
-            {
-                state = "Allowed";
-            }
-            else
-            {
-                state = "Not shared";
-            }
+            var state = device.IPAddress is not null ? "Attached"
+                : device.Guid is not null ? device.IsForced ? "Shared (forced)" : "Shared"
+                : device.BusId.Value.IsIncompatibleHub ? "Incompatible hub"
+                : Policy.IsAutoBindAllowed(device) ? "Allowed" : "Not shared";
             console.Write($"{(device.BusId.Value.IsIncompatibleHub ? string.Empty : device.BusId.Value),-5}  ");
             console.Write($"{device.HardwareId,-9}  ");
-            console.WriteTruncated(GetDescription(device, usbids), 60, true);
+            console.WriteTruncated(GetDescription(device, usbIds), 60, true);
             console.WriteLine($"  {state}");
         }
         console.WriteLine(string.Empty);
@@ -159,19 +138,19 @@ sealed partial class CommandHandlers : ICommandHandlers
         {
             Debug.Assert(device.Guid.HasValue);
             console.Write($"{device.Guid.Value,-36:D}  ");
-            console.WriteTruncated(GetDescription(device, usbids), 60, false);
+            console.WriteTruncated(GetDescription(device, usbIds), 60, false);
             console.WriteLine(string.Empty);
         }
         console.WriteLine(string.Empty);
 
-        console.CheckAndReportServerRunning(false);
+        _ = console.CheckAndReportServerRunning(false);
         console.ReportIfForceNeeded();
         return Task.FromResult(ExitCode.Success);
     }
 
     static ExitCode Bind(BusId busId, bool force, IConsole console)
     {
-        var device = UsbDevice.GetAll().Where(d => d.BusId.HasValue && d.BusId.Value == busId).SingleOrDefault();
+        var device = UsbDevice.GetAll().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
         if (device is null)
         {
             console.ReportError($"There is no device with busid '{busId}'.");
@@ -193,7 +172,7 @@ sealed partial class CommandHandlers : ICommandHandlers
         }
         if (!device.Guid.HasValue)
         {
-            RegistryUtils.Persist(device.InstanceId, device.Description);
+            RegistryUtilities.Persist(device.InstanceId, device.Description);
         }
         if (!force)
         {
@@ -209,7 +188,7 @@ sealed partial class CommandHandlers : ICommandHandlers
                 console.ReportRebootRequired();
             }
         }
-        console.CheckAndReportServerRunning(false);
+        _ = console.CheckAndReportServerRunning(false);
         return ExitCode.Success;
     }
 
@@ -220,16 +199,14 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.Bind(VidPid vidPid, bool force, IConsole console, CancellationToken cancellationToken)
     {
-        if (GetBusIdByHardwareId(vidPid, console) is not BusId busId)
-        {
-            return Task.FromResult(ExitCode.Failure);
-        }
-        return Task.FromResult(Bind(busId, force, console));
+        return GetBusIdByHardwareId(vidPid, console) is BusId busId
+            ? Task.FromResult(Bind(busId, force, console))
+            : Task.FromResult(ExitCode.Failure);
     }
 
     Task<ExitCode> ICommandHandlers.Unbind(BusId busId, IConsole console, CancellationToken cancellationToken)
     {
-        var device = UsbDevice.GetAll().Where(d => d.BusId.HasValue && d.BusId.Value == busId).SingleOrDefault();
+        var device = UsbDevice.GetAll().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
         if (device is null)
         {
             console.ReportError($"There is no device with busid '{busId}'.");
@@ -245,7 +222,7 @@ sealed partial class CommandHandlers : ICommandHandlers
         {
             return Task.FromResult(ExitCode.AccessDenied);
         }
-        RegistryUtils.StopSharingDevice(device.Guid.Value);
+        RegistryUtilities.StopSharingDevice(device.Guid.Value);
         if (NewDev.UnforceVBoxDriver(device.InstanceId))
         {
             console.ReportRebootRequired();
@@ -275,7 +252,7 @@ sealed partial class CommandHandlers : ICommandHandlers
         {
             if (device.Guid is not null)
             {
-                RegistryUtils.StopSharingDevice(device.Guid.Value);
+                RegistryUtilities.StopSharingDevice(device.Guid.Value);
             }
             try
             {
@@ -284,7 +261,7 @@ sealed partial class CommandHandlers : ICommandHandlers
                     reboot = true;
                 }
             }
-            catch (Exception ex) when (ex is Win32Exception || ex is ConfigurationManagerException)
+            catch (Exception ex) when (ex is Win32Exception or ConfigurationManagerException)
             {
                 driverError = true;
             }
@@ -302,7 +279,7 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.Unbind(Guid guid, IConsole console, CancellationToken cancellationToken)
     {
-        var device = RegistryUtils.GetBoundDevices().Where(d => d.Guid.HasValue && d.Guid.Value == guid).SingleOrDefault();
+        var device = RegistryUtilities.GetBoundDevices().SingleOrDefault(d => d.Guid.HasValue && d.Guid.Value == guid);
         if (device is null)
         {
             console.ReportError($"There is no device with guid '{guid:D}'.");
@@ -326,7 +303,7 @@ sealed partial class CommandHandlers : ICommandHandlers
         {
             return Task.FromResult(ExitCode.AccessDenied);
         }
-        RegistryUtils.StopSharingAllDevices();
+        RegistryUtilities.StopSharingAllDevices();
         var reboot = false;
         var driverError = false;
         foreach (var originalDeviceId in ConfigurationManager.GetOriginalDeviceIdsWithVBoxDriver())
@@ -338,7 +315,7 @@ sealed partial class CommandHandlers : ICommandHandlers
                     reboot = true;
                 }
             }
-            catch (Exception ex) when (ex is Win32Exception || ex is ConfigurationManagerException)
+            catch (Exception ex) when (ex is Win32Exception or ConfigurationManagerException)
             {
                 driverError = true;
             }
@@ -354,41 +331,45 @@ sealed partial class CommandHandlers : ICommandHandlers
         return Task.FromResult(ExitCode.Success);
     }
 
-    async Task<ExitCode> ICommandHandlers.AttachWsl(BusId busId, bool autoAttach, string? distribution, IConsole console, CancellationToken cancellationToken)
+    async Task<ExitCode> ICommandHandlers.AttachWsl(BusId busId, bool autoAttach, bool unplugged, string? distribution, IPAddress? hostAddress,
+        IConsole console, CancellationToken cancellationToken)
     {
-        var device = UsbDevice.GetAll().Where(d => d.BusId.HasValue && d.BusId.Value == busId).SingleOrDefault();
+        var device = UsbDevice.GetAll().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
         if (device is null)
         {
-            console.ReportError($"There is no device with busid '{busId}'.");
-            return ExitCode.Failure;
+            if (!autoAttach || !unplugged)
+            {
+                console.ReportError($"There is no device with busid '{busId}'.");
+                return ExitCode.Failure;
+            }
+            // user requested auto-attach, even if a device is currently not plugged in
         }
-        if (!device.Guid.HasValue && !Policy.IsAutoBindAllowed(device))
+        else
         {
-            console.ReportError($"Device is not shared; run 'usbipd bind --busid {busId}' as administrator first.");
-            return ExitCode.Failure;
-        }
-        // We allow auto-attach on devices that are already attached.
-        if (!autoAttach && (device.IPAddress is not null))
-        {
-            console.ReportError($"Device with busid '{busId}' is already attached to a client.");
-            return ExitCode.Failure;
+            if (!device.Guid.HasValue && !Policy.IsAutoBindAllowed(device))
+            {
+                console.ReportError($"Device is not shared; run 'usbipd bind --busid {busId}' as administrator first.");
+                return ExitCode.Failure;
+            }
+            // We allow auto-attach on devices that are already attached.
+            if (!autoAttach && (device.IPAddress is not null))
+            {
+                console.ReportError($"Device with busid '{busId}' is already attached to a client.");
+                return ExitCode.Failure;
+            }
         }
 
-        if (!console.CheckAndReportServerRunning(true))
-        {
-            return ExitCode.Failure;
-        }
-
-        return await Wsl.Attach(busId, autoAttach, distribution, console, cancellationToken);
+        return console.CheckAndReportServerRunning(true)
+            ? await Wsl.Attach(busId, autoAttach, distribution, hostAddress, console, cancellationToken)
+            : ExitCode.Failure;
     }
 
-    async Task<ExitCode> ICommandHandlers.AttachWsl(VidPid vidPid, bool autoAttach, string? distribution, IConsole console, CancellationToken cancellationToken)
+    async Task<ExitCode> ICommandHandlers.AttachWsl(VidPid vidPid, bool autoAttach, string? distribution, IPAddress? hostAddress,
+        IConsole console, CancellationToken cancellationToken)
     {
-        if (GetBusIdByHardwareId(vidPid, console) is not BusId busId)
-        {
-            return ExitCode.Failure;
-        }
-        return await ((ICommandHandlers)this).AttachWsl(busId, autoAttach, distribution, console, cancellationToken);
+        return GetBusIdByHardwareId(vidPid, console) is BusId busId
+            ? await ((ICommandHandlers)this).AttachWsl(busId, autoAttach, false, distribution, hostAddress, console, cancellationToken)
+            : ExitCode.Failure;
     }
 
     static ExitCode Detach(IEnumerable<UsbDevice> devices, IConsole console)
@@ -402,7 +383,7 @@ sealed partial class CommandHandlers : ICommandHandlers
                 console.ReportInfo($"Device with busid '{device.BusId}' was already not attached.");
                 continue;
             }
-            if (!RegistryUtils.SetDeviceAsDetached(device.Guid.Value))
+            if (!RegistryUtilities.SetDeviceAsDetached(device.Guid.Value))
             {
                 console.ReportError($"Failed to detach device with busid '{device.BusId}'.");
                 error = true;
@@ -413,7 +394,7 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.Detach(BusId busId, IConsole console, CancellationToken cancellationToken)
     {
-        var device = UsbDevice.GetAll().Where(d => d.BusId.HasValue && d.BusId.Value == busId).SingleOrDefault();
+        var device = UsbDevice.GetAll().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
         if (device is null)
         {
             console.ReportError($"There is no device with busid '{busId}'.");
@@ -435,7 +416,7 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.DetachAll(IConsole console, CancellationToken cancellationToken)
     {
-        if (!RegistryUtils.SetAllDevicesAsDetached())
+        if (!RegistryUtilities.SetAllDevicesAsDetached())
         {
             console.ReportError($"Failed to detach one or more devices.");
             return Task.FromResult(ExitCode.Failure);
@@ -480,7 +461,7 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.PolicyAdd(PolicyRule rule, IConsole console, CancellationToken cancellationToken)
     {
-        if (RegistryUtils.GetPolicyRules().FirstOrDefault(r => r.Value == rule) is var existingRule && existingRule.Key != default)
+        if (RegistryUtilities.GetPolicyRules().FirstOrDefault(r => r.Value == rule) is var existingRule && existingRule.Key != default)
         {
             console.ReportError($"Policy rule already exists with guid '{existingRule.Key:D}'.");
             return Task.FromResult(ExitCode.Failure);
@@ -491,14 +472,14 @@ sealed partial class CommandHandlers : ICommandHandlers
             return Task.FromResult(ExitCode.AccessDenied);
         }
 
-        var guid = RegistryUtils.AddPolicyRule(rule);
+        var guid = RegistryUtilities.AddPolicyRule(rule);
         console.ReportInfo($"Policy rule created with guid '{guid:D}'.");
         return Task.FromResult(ExitCode.Success);
     }
 
     Task<ExitCode> ICommandHandlers.PolicyList(IConsole console, CancellationToken cancellationToken)
     {
-        var policyRules = RegistryUtils.GetPolicyRules();
+        var policyRules = RegistryUtilities.GetPolicyRules();
         console.WriteLine("Policy rules:");
         console.WriteLine($"{"GUID",-36}  {"EFFECT",-6}  {"OPERATION",-9}  {"BUSID",-5}  {"VID:PID",-9}");
         foreach (var rule in policyRules)
@@ -513,6 +494,8 @@ sealed partial class CommandHandlers : ICommandHandlers
                     console.Write($"{(autoBind.BusId.HasValue ? autoBind.BusId.Value : string.Empty),-5}  ");
                     console.Write($"{(autoBind.HardwareId.HasValue ? autoBind.HardwareId.Value : string.Empty),-9}");
                     break;
+                default:
+                    throw new UnexpectedResultException();
             }
             console.WriteLine(string.Empty);
         }
@@ -522,7 +505,7 @@ sealed partial class CommandHandlers : ICommandHandlers
 
     Task<ExitCode> ICommandHandlers.PolicyRemove(Guid guid, IConsole console, CancellationToken cancellationToken)
     {
-        if (!RegistryUtils.GetPolicyRules().ContainsKey(guid))
+        if (!RegistryUtilities.GetPolicyRules().ContainsKey(guid))
         {
             console.ReportError($"There is no policy rule with guid '{guid:D}'.");
             return Task.FromResult(ExitCode.Failure);
@@ -533,7 +516,7 @@ sealed partial class CommandHandlers : ICommandHandlers
             return Task.FromResult(ExitCode.AccessDenied);
         }
 
-        RegistryUtils.RemovePolicyRule(guid);
+        RegistryUtilities.RemovePolicyRule(guid);
         return Task.FromResult(ExitCode.Success);
     }
 
@@ -544,7 +527,7 @@ sealed partial class CommandHandlers : ICommandHandlers
             return Task.FromResult(ExitCode.AccessDenied);
         }
 
-        RegistryUtils.RemovePolicyRuleAll();
+        RegistryUtilities.RemovePolicyRuleAll();
         return Task.FromResult(ExitCode.Success);
     }
 }

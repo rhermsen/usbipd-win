@@ -14,7 +14,7 @@ using static Usbipd.Interop.VBoxUsb;
 
 namespace Usbipd;
 
-sealed class PcapNg
+sealed partial class PcapNg
     : IDisposable
 {
     public PcapNg(IConfiguration config, ILogger<PcapNg> logger)
@@ -65,7 +65,7 @@ sealed class PcapNg
             UsbSupTransferType.USBSUP_TRANSFER_TYPE_INTR => 1,
             UsbSupTransferType.USBSUP_TRANSFER_TYPE_MSG => 2,
             UsbSupTransferType.USBSUP_TRANSFER_TYPE_BULK => 3,
-            _ => throw new ArgumentOutOfRangeException(nameof(type)),
+            UsbSupTransferType.USBSUP_TRANSFER_TYPE_CTRL or _ => throw new ArgumentOutOfRangeException(nameof(type)),
         };
     }
 
@@ -78,39 +78,39 @@ sealed class PcapNg
 
         var timestamp = GetTimestamp() / 10;  // in micro seconds
 
-        using var usbmon = new BinaryWriter(new MemoryStream());
-        usbmon.Write((ulong)basic.seqnum);
-        usbmon.Write((byte)'S');
-        usbmon.Write(ConvertType(basic.EndpointType(cmdSubmit)));
-        usbmon.Write(basic.RawEndpoint());
-        usbmon.Write((byte)basic.devid);
-        usbmon.Write((ushort)(basic.devid >> 16));
-        usbmon.Write((byte)(basic.ep == 0 ? '\0' : '-'));
-        usbmon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
-        usbmon.Write(timestamp / 1000000); // seconds
-        usbmon.Write((uint)(timestamp % 1000000)); // micro seconds
-        usbmon.Write(-115); // -EINPROGRESS
-        usbmon.Write(cmdSubmit.transfer_buffer_length); // length
-        usbmon.Write(0); // actual
+        using var usbMon = new BinaryWriter(new MemoryStream());
+        usbMon.Write((ulong)basic.seqnum);
+        usbMon.Write((byte)'S');
+        usbMon.Write(ConvertType(basic.EndpointType(cmdSubmit)));
+        usbMon.Write(basic.RawEndpoint());
+        usbMon.Write(unchecked((byte)basic.devid));
+        usbMon.Write((ushort)(basic.devid >> 16));
+        usbMon.Write((byte)(basic.ep == 0 ? '\0' : '-'));
+        usbMon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
+        usbMon.Write(timestamp / 1000000); // seconds
+        usbMon.Write((uint)(timestamp % 1000000)); // micro seconds
+        usbMon.Write(-115); // -EINPROGRESS
+        usbMon.Write(cmdSubmit.transfer_buffer_length); // length
+        usbMon.Write(0); // actual
         if (basic.ep == 0)
         {
-            usbmon.Write(cmdSubmit.setup.bmRequestType.B);
-            usbmon.Write(cmdSubmit.setup.bRequest);
-            usbmon.Write(cmdSubmit.setup.wValue.W);
-            usbmon.Write(cmdSubmit.setup.wIndex.W);
-            usbmon.Write(cmdSubmit.setup.wLength);
+            usbMon.Write(cmdSubmit.setup.bmRequestType.B);
+            usbMon.Write(cmdSubmit.setup.bRequest);
+            usbMon.Write(cmdSubmit.setup.wValue.W);
+            usbMon.Write(cmdSubmit.setup.wIndex.W);
+            usbMon.Write(cmdSubmit.setup.wLength);
         }
         else
         {
-            usbmon.Write(0ul); // setup == 0 for ep != 0
+            usbMon.Write(0ul); // setup == 0 for ep != 0
         }
-        usbmon.Write(cmdSubmit.interval);
-        usbmon.Write(0u); // start_frame == 0 for non-ISO
-        usbmon.Write(cmdSubmit.transfer_flags);
-        usbmon.Write(0u); // number_of_packets == 0 for non-ISO
-        usbmon.Write(data);
+        usbMon.Write(cmdSubmit.interval);
+        usbMon.Write(0u); // start_frame == 0 for non-ISO
+        usbMon.Write(cmdSubmit.transfer_flags);
+        usbMon.Write(0u); // number_of_packets == 0 for non-ISO
+        usbMon.Write(data);
 
-        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbmon)).AsTask().Wait();
+        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbMon)).AsTask().Wait();
     }
 
     public void DumpPacketNonIsoReply(UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit cmdSubmit, UsbIpHeaderRetSubmit retSubmit, ReadOnlySpan<byte> data)
@@ -122,31 +122,32 @@ sealed class PcapNg
 
         var timestamp = GetTimestamp() / 10;  // in micro seconds
 
-        using var usbmon = new BinaryWriter(new MemoryStream());
-        usbmon.Write((ulong)basic.seqnum);
-        usbmon.Write((byte)'C');
-        usbmon.Write(ConvertType(basic.EndpointType(cmdSubmit)));
-        usbmon.Write(basic.RawEndpoint());
-        usbmon.Write((byte)basic.devid);
-        usbmon.Write((ushort)(basic.devid >> 16));
-        usbmon.Write((byte)'-');
-        usbmon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
-        usbmon.Write(timestamp / 1000000); // seconds
-        usbmon.Write((uint)(timestamp % 1000000)); // micro seconds
-        usbmon.Write(retSubmit.status);
-        usbmon.Write(retSubmit.actual_length); // length
-        usbmon.Write(retSubmit.actual_length); // actual
-        usbmon.Write(0ul); // setup == 0 for reply
-        usbmon.Write(cmdSubmit.interval);
-        usbmon.Write(0u); // start_frame == 0 for non-ISO
-        usbmon.Write(cmdSubmit.transfer_flags);
-        usbmon.Write(0u); // number_of_packets == 0 for non-ISO
-        usbmon.Write(data);
+        using var usbMon = new BinaryWriter(new MemoryStream());
+        usbMon.Write((ulong)basic.seqnum);
+        usbMon.Write((byte)'C');
+        usbMon.Write(ConvertType(basic.EndpointType(cmdSubmit)));
+        usbMon.Write(basic.RawEndpoint());
+        usbMon.Write(unchecked((byte)basic.devid));
+        usbMon.Write((ushort)(basic.devid >> 16));
+        usbMon.Write((byte)'-');
+        usbMon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
+        usbMon.Write(timestamp / 1000000); // seconds
+        usbMon.Write((uint)(timestamp % 1000000)); // micro seconds
+        usbMon.Write(retSubmit.status);
+        usbMon.Write(retSubmit.actual_length); // length
+        usbMon.Write(retSubmit.actual_length); // actual
+        usbMon.Write(0ul); // setup == 0 for reply
+        usbMon.Write(cmdSubmit.interval);
+        usbMon.Write(0u); // start_frame == 0 for non-ISO
+        usbMon.Write(cmdSubmit.transfer_flags);
+        usbMon.Write(0u); // number_of_packets == 0 for non-ISO
+        usbMon.Write(data);
 
-        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbmon)).AsTask().Wait();
+        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbMon)).AsTask().Wait();
     }
 
-    public void DumpPacketIsoRequest(UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit cmdSubmit, UsbIpIsoPacketDescriptor[] packetDescriptors, ReadOnlySpan<byte> data)
+    public void DumpPacketIsoRequest(UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit cmdSubmit, UsbIpIsoPacketDescriptor[] packetDescriptors,
+        ReadOnlySpan<byte> data)
     {
         if (!Enabled)
         {
@@ -155,39 +156,40 @@ sealed class PcapNg
 
         var timestamp = GetTimestamp() / 10;  // in micro seconds
 
-        using var usbmon = new BinaryWriter(new MemoryStream());
-        usbmon.Write((ulong)basic.seqnum);
-        usbmon.Write((byte)'S');
-        usbmon.Write((byte)0); // ISO
-        usbmon.Write(basic.RawEndpoint());
-        usbmon.Write((byte)basic.devid);
-        usbmon.Write((ushort)(basic.devid >> 16));
-        usbmon.Write((byte)'-');
-        usbmon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
-        usbmon.Write(timestamp / 1000000); // seconds
-        usbmon.Write((uint)(timestamp % 1000000)); // micro seconds
-        usbmon.Write(-115); // -EINPROGRESS
-        usbmon.Write(cmdSubmit.transfer_buffer_length); // length
-        usbmon.Write(data.Length + packetDescriptors.Length * 16); // actual
-        usbmon.Write((uint)0); // ISO error count
-        usbmon.Write((uint)packetDescriptors.Length);
-        usbmon.Write(cmdSubmit.interval);
-        usbmon.Write(cmdSubmit.start_frame);
-        usbmon.Write(cmdSubmit.transfer_flags);
-        usbmon.Write(cmdSubmit.number_of_packets);
-        usbmon.Write(data);
+        using var usbMon = new BinaryWriter(new MemoryStream());
+        usbMon.Write((ulong)basic.seqnum);
+        usbMon.Write((byte)'S');
+        usbMon.Write((byte)0); // ISO
+        usbMon.Write(basic.RawEndpoint());
+        usbMon.Write(unchecked((byte)basic.devid));
+        usbMon.Write((ushort)(basic.devid >> 16));
+        usbMon.Write((byte)'-');
+        usbMon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
+        usbMon.Write(timestamp / 1000000); // seconds
+        usbMon.Write((uint)(timestamp % 1000000)); // micro seconds
+        usbMon.Write(-115); // -EINPROGRESS
+        usbMon.Write(cmdSubmit.transfer_buffer_length); // length
+        usbMon.Write(data.Length + (packetDescriptors.Length * 16)); // actual
+        usbMon.Write((uint)0); // ISO error count
+        usbMon.Write((uint)packetDescriptors.Length);
+        usbMon.Write(cmdSubmit.interval);
+        usbMon.Write(cmdSubmit.start_frame);
+        usbMon.Write(cmdSubmit.transfer_flags);
+        usbMon.Write(cmdSubmit.number_of_packets);
+        usbMon.Write(data);
         foreach (var packetDescriptor in packetDescriptors)
         {
-            usbmon.Write(packetDescriptor.status);
-            usbmon.Write(packetDescriptor.offset);
-            usbmon.Write(packetDescriptor.length);
-            usbmon.Write((uint)0); // padding
+            usbMon.Write(packetDescriptor.status);
+            usbMon.Write(packetDescriptor.offset);
+            usbMon.Write(packetDescriptor.length);
+            usbMon.Write((uint)0); // padding
         }
 
-        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbmon)).AsTask().Wait();
+        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbMon)).AsTask().Wait();
     }
 
-    public void DumpPacketIsoReply(UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit cmdSubmit, UsbIpHeaderRetSubmit retSubmit, UsbIpIsoPacketDescriptor[] packetDescriptors, ReadOnlySpan<byte> data)
+    public void DumpPacketIsoReply(UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit cmdSubmit, UsbIpHeaderRetSubmit retSubmit,
+        UsbIpIsoPacketDescriptor[] packetDescriptors, ReadOnlySpan<byte> data)
     {
         if (!Enabled)
         {
@@ -196,49 +198,52 @@ sealed class PcapNg
 
         var timestamp = GetTimestamp() / 10;  // in micro seconds
 
-        using var usbmon = new BinaryWriter(new MemoryStream());
-        usbmon.Write((ulong)basic.seqnum);
-        usbmon.Write((byte)'C');
-        usbmon.Write((byte)0); // ISO
-        usbmon.Write(basic.RawEndpoint());
-        usbmon.Write((byte)basic.devid);
-        usbmon.Write((ushort)(basic.devid >> 16));
-        usbmon.Write((byte)'-');
-        usbmon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
-        usbmon.Write(timestamp / 1000000); // seconds
-        usbmon.Write((uint)(timestamp % 1000000)); // micro seconds
-        usbmon.Write(retSubmit.status);
-        usbmon.Write(retSubmit.actual_length); // length
-        usbmon.Write(data.Length + packetDescriptors.Length * 16); // actual
-        usbmon.Write((uint)retSubmit.error_count); // ISO error count
-        usbmon.Write((uint)packetDescriptors.Length);
-        usbmon.Write(cmdSubmit.interval);
-        usbmon.Write(cmdSubmit.start_frame);
-        usbmon.Write(cmdSubmit.transfer_flags);
-        usbmon.Write(cmdSubmit.number_of_packets);
+        using var usbMon = new BinaryWriter(new MemoryStream());
+        usbMon.Write((ulong)basic.seqnum);
+        usbMon.Write((byte)'C');
+        usbMon.Write((byte)0); // ISO
+        usbMon.Write(basic.RawEndpoint());
+        usbMon.Write(unchecked((byte)basic.devid));
+        usbMon.Write((ushort)(basic.devid >> 16));
+        usbMon.Write((byte)'-');
+        usbMon.Write((byte)(data.IsEmpty ? basic.direction == UsbIpDir.USBIP_DIR_IN ? '<' : '>' : '\0'));
+        usbMon.Write(timestamp / 1000000); // seconds
+        usbMon.Write((uint)(timestamp % 1000000)); // micro seconds
+        usbMon.Write(retSubmit.status);
+        usbMon.Write(retSubmit.actual_length); // length
+        usbMon.Write(data.Length + (packetDescriptors.Length * 16)); // actual
+        usbMon.Write((uint)retSubmit.error_count); // ISO error count
+        usbMon.Write((uint)packetDescriptors.Length);
+        usbMon.Write(cmdSubmit.interval);
+        usbMon.Write(cmdSubmit.start_frame);
+        usbMon.Write(cmdSubmit.transfer_flags);
+        usbMon.Write(cmdSubmit.number_of_packets);
         var actualOffset = 0u;
         foreach (var packetDescriptor in packetDescriptors)
         {
-            // NOTE: Usbmon on Linux gets this wrong. On input, the actual_offset needs to be calculated.
-            usbmon.Write(packetDescriptor.status);
-            usbmon.Write(basic.direction == UsbIpDir.USBIP_DIR_IN ? actualOffset : packetDescriptor.offset);
-            usbmon.Write(packetDescriptor.actual_length);
-            usbmon.Write((uint)0); // padding
+            // NOTE: UsbMon on Linux gets this wrong. On input, the actual_offset needs to be calculated.
+            usbMon.Write(packetDescriptor.status);
+            usbMon.Write(basic.direction == UsbIpDir.USBIP_DIR_IN ? actualOffset : packetDescriptor.offset);
+            usbMon.Write(packetDescriptor.actual_length);
+            usbMon.Write((uint)0); // padding
             actualOffset += packetDescriptor.actual_length;
         }
-        usbmon.Write(data);
+        usbMon.Write(data);
 
-        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbmon)).AsTask().Wait();
+        BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(0, usbMon)).AsTask().Wait();
     }
 
     static void UpdateChecksum(ref ushort checksum, byte[] data, int offset)
     {
         var v = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(offset, 2));
-        if ((uint)checksum + v > ushort.MaxValue)
+        unchecked
         {
-            ++checksum;
+            if ((uint)checksum + v > ushort.MaxValue)
+            {
+                ++checksum;
+            }
+            checksum += v;
         }
-        checksum += v;
     }
 
     static readonly IPEndPoint hostFakeIpv4 = new(IPAddress.Parse("10.0.0.0"), USBIP_PORT);
@@ -253,7 +258,7 @@ sealed class PcapNg
             return;
         }
 
-        var deviceFakeIpv4 = new IPEndPoint(IPAddress.Parse($"10.0.{(byte)busId.Bus}.{(byte)busId.Port}"), deviceFakePort);
+        var deviceFakeIpv4 = new IPEndPoint(IPAddress.Parse($"10.0.{unchecked((byte)busId.Bus)}.{unchecked((byte)busId.Port)}"), deviceFakePort);
         ++deviceFakePort;
         if (deviceFakePort < 0x8000)
         {
@@ -261,24 +266,24 @@ sealed class PcapNg
         }
 
         var source = reply ? hostFakeIpv4 : deviceFakeIpv4;
-        var dest = reply ? deviceFakeIpv4 : hostFakeIpv4;
+        var destination = reply ? deviceFakeIpv4 : hostFakeIpv4;
 
         using var ipv4 = new BinaryWriter(new MemoryStream());
         // IPv4 header
         ipv4.Write((byte)0x45); // Version 4, header_size = 5 * sizeof(uint)
         ipv4.Write((byte)0); // DSCP/ECN (unused)
-        ipv4.Write(IPAddress.HostToNetworkOrder((short)(20 + 20 + Unsafe.SizeOf<UsbIpHeader>()))); // IPv4 header + TCP header + UsbIpHeader
+        ipv4.Write(IPAddress.HostToNetworkOrder(unchecked((short)(20 + 20 + Unsafe.SizeOf<UsbIpHeader>())))); // IPv4 header + TCP header + UsbIpHeader
         ipv4.Write((ushort)0); // Id (unused)
         ipv4.Write((ushort)0); // Flags/Offset (unused)
         ipv4.Write((byte)255); // TTL
         ipv4.Write((byte)6); // protocol = TCP
         ipv4.Write((ushort)0); // checksum (filled in later)
         ipv4.Write(source.Address.GetAddressBytes()); // source IP address
-        ipv4.Write(dest.Address.GetAddressBytes()); // destination IP address
+        ipv4.Write(destination.Address.GetAddressBytes()); // destination IP address
 
         // TCP header
-        ipv4.Write(IPAddress.HostToNetworkOrder((short)source.Port)); // source port
-        ipv4.Write(IPAddress.HostToNetworkOrder((short)dest.Port)); // destination port
+        ipv4.Write(IPAddress.HostToNetworkOrder(unchecked((short)source.Port))); // source port
+        ipv4.Write(IPAddress.HostToNetworkOrder(unchecked((short)destination.Port))); // destination port
         ipv4.Write(0); // sequence number (unused)
         ipv4.Write(0); // ACK number (unused)
         ipv4.Write((byte)0x50); // data offset (in uint_32), 0 (reserved)
@@ -299,7 +304,7 @@ sealed class PcapNg
             {
                 UpdateChecksum(ref checksum, bytes, offset);
             }
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10, 2), (ushort)~checksum);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10, 2), unchecked((ushort)~checksum));
         }
 
         // TCP checksum
@@ -322,7 +327,7 @@ sealed class PcapNg
                 // zeros / protocol / TCP Length
                 UpdateChecksum(ref checksum, bytes, offset);
             }
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(36, 2), (ushort)~checksum);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(36, 2), unchecked((ushort)~checksum));
         }
 
         BlockChannel.Writer.WriteAsync(CreateEnhancedPacketBlock(1, bytes)).AsTask().Wait();
@@ -345,7 +350,7 @@ sealed class PcapNg
                 }
                 try
                 {
-                    await BlockChannel.Reader.WaitToReadAsync(flushTimer.Token);
+                    _ = await BlockChannel.Reader.WaitToReadAsync(flushTimer.Token);
                     while (BlockChannel.Reader.TryRead(out var block))
                     {
                         await Stream.WriteAsync(block, CancellationToken.None);
@@ -395,6 +400,12 @@ sealed class PcapNg
         return TimestampBase + (ulong)Stopwatch.Elapsed.Ticks;
     }
 
+    static byte[] TimestampToBytes(ulong value)
+    {
+        // timestamps are written high 32-bits first, irrespective of endianness
+        return [.. BitConverter.GetBytes((uint)(value >> 32)), .. BitConverter.GetBytes(unchecked((uint)value))];
+    }
+
     static void AddOption(BinaryWriter block, ushort code, byte[] data)
     {
         Pad(block);
@@ -405,7 +416,7 @@ sealed class PcapNg
 
     static void AddOption(BinaryWriter block, ushort code, byte value)
     {
-        AddOption(block, code, new byte[] { value });
+        AddOption(block, code, [value]);
     }
 
     static void AddOption(BinaryWriter block, ushort code, ulong value)
@@ -422,8 +433,8 @@ sealed class PcapNg
     {
         using var block = CreateBlock(0x0a0d0d0a);
         block.Write(0x1a2b3c4d); // endianness magic
-        block.Write((ushort)1); // major pcapng version
-        block.Write((ushort)0); // minor pcapng version
+        block.Write((ushort)1); // major PcapNg version
+        block.Write((ushort)0); // minor PcapNg version
         block.Write(0xffffffffffffffff); // unspecified section size
         AddOption(block, 3, $"{Environment.OSVersion.VersionString}"); // shb_os
         AddOption(block, 4, $"{Program.Product} {GitVersionInformation.InformationalVersion}"); // shb_userappl
@@ -452,10 +463,10 @@ sealed class PcapNg
         return FinishBlock(block);
     }
 
-    byte[] CreateEnhancedPacketBlock(uint interfaceId, BinaryWriter usbmon)
+    byte[] CreateEnhancedPacketBlock(uint interfaceId, BinaryWriter usbMon)
     {
-        usbmon.Flush();
-        var data = ((MemoryStream)usbmon.BaseStream).ToArray();
+        usbMon.Flush();
+        var data = ((MemoryStream)usbMon.BaseStream).ToArray();
         return CreateEnhancedPacketBlock(interfaceId, data);
     }
 
@@ -467,8 +478,8 @@ sealed class PcapNg
 
         using var block = CreateBlock(6);
         block.Write(interfaceId);
-        block.Write((uint)(timestamp >> 32));
-        block.Write((uint)timestamp);
+        // timestamps are written high 32-bits first, irrespective of endianness
+        block.Write(TimestampToBytes(timestamp));
         block.Write(captureLength); // captured packet length
         block.Write(data.Length); // original packet length
         block.Write(data[0..captureLength]);
@@ -481,10 +492,10 @@ sealed class PcapNg
 
         using var block = CreateBlock(5);
         block.Write(0); // interface ID
-        block.Write((uint)(timestamp >> 32));
-        block.Write((uint)timestamp);
-        AddOption(block, 2, BitConverter.GetBytes((uint)(TimestampBase >> 32)).Concat(BitConverter.GetBytes((uint)TimestampBase)).ToArray()); // isb_starttime
-        AddOption(block, 3, BitConverter.GetBytes((uint)(timestamp >> 32)).Concat(BitConverter.GetBytes((uint)timestamp)).ToArray()); // isb_endtime
+        // timestamps are written high 32-bits first, irrespective of endianness
+        block.Write(TimestampToBytes(timestamp));
+        AddOption(block, 2, TimestampToBytes(TimestampBase)); // isb_starttime
+        AddOption(block, 3, TimestampToBytes(timestamp)); // isb_endtime
         AddOption(block, 4, TotalPacketsWritten); // isb_ifrecv
         AddOption(block, 5, 0ul); // isb_ifdrop
         AddOption(block, 6, TotalPacketsWritten); // isb_filteraccept
@@ -516,7 +527,7 @@ sealed class PcapNg
         block.Write(0); // opt_endofopt
         var length = (uint)block.Seek(0, SeekOrigin.Current) + 4;
         block.Write(length); // block total length
-        block.Seek(4, SeekOrigin.Begin);
+        _ = block.Seek(4, SeekOrigin.Begin);
         block.Write(length); // block total length
         block.Flush();
         var memoryStream = (MemoryStream)block.BaseStream;

@@ -30,7 +30,7 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
     {
         try
         {
-            var opCode = await RecvOpCodeAsync(cancellationToken);
+            var opCode = await ReceiveOpCodeAsync(cancellationToken);
             Logger.Debug($"Received opcode: {opCode}");
             switch (opCode)
             {
@@ -40,6 +40,8 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
                 case OpCode.OP_REQ_IMPORT:
                     await HandleRequestImportAsync(cancellationToken);
                     break;
+                case OpCode.OP_REP_DEVLIST:
+                case OpCode.OP_REP_IMPORT:
                 default:
                     throw new ProtocolViolationException($"unexpected opcode {opCode}");
             }
@@ -48,7 +50,7 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
         {
             // EndOfStream is client hang ups and OperationCanceled is detachments;
             // neither are an error but part of normal functionality.
-            if (!(ex is EndOfStreamException || ex is OperationCanceledException))
+            if (ex is not (EndOfStreamException or OperationCanceledException))
             {
                 Logger.ClientError(ex);
             }
@@ -136,11 +138,11 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
                 {
                     // The device is not currently bound, but it is allowed by the policy. Auto-bind it now...
                     Logger.AutoBind(ClientContext.ClientAddress, busId, bindDevice.InstanceId);
-                    RegistryUtils.Persist(bindDevice.InstanceId, bindDevice.Description);
+                    RegistryUtilities.Persist(bindDevice.InstanceId, bindDevice.Description);
                 }
             }
 
-            var device = RegistryUtils.GetBoundDevices().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
+            var device = RegistryUtilities.GetBoundDevices().SingleOrDefault(d => d.BusId.HasValue && d.BusId.Value == busId);
             if (device is null)
             {
                 await SendOpCodeAsync(OpCode.OP_REP_IMPORT, Status.ST_NODEV);
@@ -201,7 +203,7 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
                 // setup token to free device
                 using var attachedClientTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 using var cancelEvent = new AutoResetEvent(false);
-                ThreadPool.RegisterWaitForSingleObject(cancelEvent, (state, timedOut) =>
+                _ = ThreadPool.RegisterWaitForSingleObject(cancelEvent, (state, timedOut) =>
                 {
                     Logger.Debug("Unbind or unplug while attached");
                     try
@@ -225,25 +227,25 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
                             },
                         },
                     };
-                    PInvoke.CM_Register_Notification(filter, (void*)cancelEvent.SafeWaitHandle.DangerousGetHandle(), static (notify, context, action, eventData, eventDataSize) =>
+                    PInvoke.CM_Register_Notification(filter, (void*)cancelEvent.SafeWaitHandle.DangerousGetHandle(),
+                        static (notify, context, action, eventData, eventDataSize) =>
                     {
-                        switch (action)
+                        if (action is CM_NOTIFY_ACTION.CM_NOTIFY_ACTION_DEVICEREMOVEPENDING or CM_NOTIFY_ACTION.CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE)
                         {
-                            case CM_NOTIFY_ACTION.CM_NOTIFY_ACTION_DEVICEREMOVEPENDING:
-                            case CM_NOTIFY_ACTION.CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE:
-                                PInvoke.SetEvent((HANDLE)(nint)context);
-                                break;
+                            _ = PInvoke.SetEvent((HANDLE)(nint)context);
                         }
                         return (uint)WIN32_ERROR.ERROR_SUCCESS;
                     }, out notification).ThrowOnError(nameof(PInvoke.CM_Register_Notification));
                 }
 
                 // Detect unbind.
-                using var attachedKey = RegistryUtils.SetDeviceAsAttached(device.Guid.Value, device.BusId.Value, ClientContext.ClientAddress, vboxDevice.InstanceId);
-                var lresult = PInvoke.RegNotifyChangeKeyValue(attachedKey.Handle, false, Windows.Win32.System.Registry.REG_NOTIFY_FILTER.REG_NOTIFY_THREAD_AGNOSTIC, cancelEvent.SafeWaitHandle, true);
-                if (lresult != WIN32_ERROR.ERROR_SUCCESS)
+                using var attachedKey = RegistryUtilities.SetDeviceAsAttached(device.Guid.Value, device.BusId.Value, ClientContext.ClientAddress,
+                    vboxDevice.InstanceId);
+                var result = PInvoke.RegNotifyChangeKeyValue(attachedKey.Handle, false,
+                    Windows.Win32.System.Registry.REG_NOTIFY_FILTER.REG_NOTIFY_THREAD_AGNOSTIC, cancelEvent.SafeWaitHandle, true);
+                if (result != WIN32_ERROR.ERROR_SUCCESS)
                 {
-                    throw new Win32Exception((int)lresult, nameof(PInvoke.RegNotifyChangeKeyValue));
+                    throw new Win32Exception((int)result, nameof(PInvoke.RegNotifyChangeKeyValue));
                 }
 
                 await ServiceProvider.GetRequiredService<AttachedClient>().RunAsync(attachedClientTokenSource.Token);
@@ -252,7 +254,7 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
             {
                 notification?.Dispose();
 
-                RegistryUtils.SetDeviceAsDetached(device.Guid.Value);
+                _ = RegistryUtilities.SetDeviceAsDetached(device.Guid.Value);
 
                 ClientContext.AttachedDevice.Dispose();
 
@@ -292,7 +294,7 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
         }
     }
 
-    async Task<OpCode> RecvOpCodeAsync(CancellationToken cancellationToken)
+    async Task<OpCode> ReceiveOpCodeAsync(CancellationToken cancellationToken)
     {
         var buf = new byte[8];
         await Stream.ReadMessageAsync(buf, cancellationToken);
@@ -301,26 +303,20 @@ sealed class ConnectedClient(ILogger<ConnectedClient> logger, ClientContext clie
         var version = BinaryPrimitives.ReadUInt16BigEndian(buf.AsSpan(0));
         if (version != USBIP_VERSION)
         {
-            throw new ProtocolViolationException($"USB/IP protocol version mismatch: expected {USBIP_VERSION.UsbIpVersionToVersion()}, got {version.UsbIpVersionToVersion()}");
+            throw new ProtocolViolationException(
+                $"USB/IP protocol version mismatch: expected {USBIP_VERSION.UsbIpVersionToVersion()}, got {version.UsbIpVersionToVersion()}");
         }
 
         var opCode = (OpCode)BinaryPrimitives.ReadUInt16BigEndian(buf.AsSpan(2));
-        if (!Enum.IsDefined(typeof(OpCode), opCode))
+        if (!Enum.IsDefined(opCode))
         {
             throw new ProtocolViolationException($"illegal opcode: {(ushort)opCode}");
         }
 
         var status = (Status)BinaryPrimitives.ReadUInt32BigEndian(buf.AsSpan(4));
-        if (!Enum.IsDefined(typeof(Status), status))
-        {
-            throw new ProtocolViolationException($"illegal status: {status}");
-        }
-        if (status != Status.ST_OK)
-        {
-            throw new ProtocolViolationException($"error status at peer: {status}");
-        }
-
-        return opCode;
+        return Enum.IsDefined(status) ? status == Status.ST_OK ? opCode
+            : throw new ProtocolViolationException($"error status at peer: {status}")
+            : throw new ProtocolViolationException($"illegal status: {status}");
     }
 
     async Task SendOpCodeAsync(OpCode opCode, Status status)

@@ -23,7 +23,7 @@ sealed class DeviceFile_Tests
     public void Constructor_FileNotFound()
     {
         using var temporaryFile = new TemporaryFile();
-        Assert.ThrowsException<Win32Exception>(() =>
+        Assert.ThrowsExactly<Win32Exception>(() =>
         {
             using var deviceFile = new DeviceFile(temporaryFile.AbsolutePath);
         });
@@ -35,9 +35,9 @@ sealed class DeviceFile_Tests
         using var temporaryFile = new TemporaryFile(true);
         var deviceFile = new DeviceFile(temporaryFile.AbsolutePath);
         deviceFile.Dispose();
-        Assert.ThrowsException<ObjectDisposedException>(() =>
+        Assert.ThrowsExactly<ObjectDisposedException>(() =>
         {
-            _ = deviceFile.DangerousGetHandle();
+            deviceFile.DangerousGetHandle();
         });
     }
 
@@ -55,7 +55,7 @@ sealed class DeviceFile_Tests
     {
         using var temporaryFile = new TemporaryFile(true);
         using var deviceFile = new DeviceFile(temporaryFile.AbsolutePath);
-        _ = deviceFile.DangerousGetHandle();
+        deviceFile.DangerousGetHandle();
     }
 
     enum TEST_IOCTL : uint
@@ -100,11 +100,11 @@ sealed class DeviceFile_Tests
     {
         using var temporaryFile = new TemporaryFile(true);
         using var deviceFile = new DeviceFile(temporaryFile.AbsolutePath);
-        var exception = Assert.ThrowsException<AggregateException>(() =>
+        var exception = Assert.ThrowsExactly<AggregateException>(() =>
         {
             deviceFile.IoControlAsync(TEST_IOCTL.FSCTL_QUERY_ALLOCATED_RANGES, null, null).Wait();
         });
-        Assert.IsInstanceOfType(exception.InnerException, typeof(Win32Exception));
+        Assert.IsInstanceOfType<Win32Exception>(exception.InnerException);
     }
 
     [TestMethod]
@@ -114,10 +114,10 @@ sealed class DeviceFile_Tests
         using var deviceFile = new DeviceFile(temporaryFile.AbsolutePath);
         var rangeBuffer = new FILE_ALLOCATED_RANGE_BUFFER();
         var outputBuffer = new byte[1];
-        var exception = Assert.ThrowsException<AggregateException>(() =>
+        var exception = Assert.ThrowsExactly<AggregateException>(() =>
         {
             deviceFile.IoControlAsync(TEST_IOCTL.FSCTL_QUERY_ALLOCATED_RANGES, Tools.StructToBytes(rangeBuffer), outputBuffer).Wait();
         });
-        Assert.IsInstanceOfType(exception.InnerException, typeof(ProtocolViolationException));
+        Assert.IsInstanceOfType<ProtocolViolationException>(exception.InnerException);
     }
 }

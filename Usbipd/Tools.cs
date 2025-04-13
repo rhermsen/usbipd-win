@@ -31,12 +31,12 @@ static class Tools
         {
             return;
         }
-        var rlen = await stream.ReadAtLeastAsync(buf, 1, true, cancellationToken);
-        if (rlen < buf.Length)
+        var readLength = await stream.ReadAtLeastAsync(buf, 1, true, cancellationToken);
+        if (readLength < buf.Length)
         {
             try
             {
-                await stream.ReadExactlyAsync(buf[rlen..], cancellationToken);
+                await stream.ReadExactlyAsync(buf[readLength..], cancellationToken);
             }
             catch (EndOfStreamException)
             {
@@ -68,7 +68,8 @@ static class Tools
         return buf;
     }
 
-    public static void BytesToStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(ReadOnlySpan<byte> bytes, out T s) where T : struct
+    public static void BytesToStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors
+        | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(ReadOnlySpan<byte> bytes, out T s) where T : struct
     {
         var required = Marshal.SizeOf<T>();
         if (bytes.Length < required)
@@ -84,7 +85,8 @@ static class Tools
         }
     }
 
-    public static T BytesToStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(ReadOnlySpan<byte> bytes) where T : struct
+    public static T BytesToStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors
+        | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(ReadOnlySpan<byte> bytes) where T : struct
     {
         BytesToStruct(bytes, out T result);
         return result;
@@ -136,24 +138,12 @@ static class Tools
 
     public static UsbSupTransferType EndpointType(this UsbIpHeaderBasic basic, UsbIpHeaderCmdSubmit submit)
     {
-        if (basic.ep == 0)
-        {
-            return UsbSupTransferType.USBSUP_TRANSFER_TYPE_MSG;
-        }
-        else if (submit.number_of_packets > 0)
-        {
-            // Specs at https://www.kernel.org/doc/html/latest/usb/usbip_protocol.html state that
-            // this shall be 0xffffffff for non-ISO, but Linux itself often sets it to 0.
-            return UsbSupTransferType.USBSUP_TRANSFER_TYPE_ISOC;
-        }
-        else if (submit.interval != 0)
-        {
-            return UsbSupTransferType.USBSUP_TRANSFER_TYPE_INTR;
-        }
-        else
-        {
-            return UsbSupTransferType.USBSUP_TRANSFER_TYPE_BULK;
-        }
+        // Specs at https://www.kernel.org/doc/html/latest/usb/usbip_protocol.html state that
+        // number_of_packets shall be 0xffffffff for non-ISO, but Linux itself often sets it to 0.
+        return basic.ep == 0 ? UsbSupTransferType.USBSUP_TRANSFER_TYPE_MSG
+            : submit.number_of_packets > 0 ? UsbSupTransferType.USBSUP_TRANSFER_TYPE_ISOC
+            : submit.interval == 0 ? UsbSupTransferType.USBSUP_TRANSFER_TYPE_BULK
+            : UsbSupTransferType.USBSUP_TRANSFER_TYPE_INTR;
     }
 
     public static Version UsbIpVersionToVersion(this ushort usbipVersion)

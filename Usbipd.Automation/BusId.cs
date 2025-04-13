@@ -9,10 +9,12 @@ using System.Text.RegularExpressions;
 
 namespace Usbipd.Automation;
 
-#if !NETSTANDARD
+#if NETSTANDARD
+public
+#else
 [JsonConverter(typeof(JsonConverterBusId))]
 #endif
-public readonly record struct BusId
+readonly record struct BusId
     : IComparable<BusId>
 {
 #if !NETSTANDARD
@@ -21,23 +23,37 @@ public readonly record struct BusId
     public BusId(ushort bus, ushort port)
     {
         // Do not allow the explicit creation of the special IncompatibleHub value.
-        // Instead, use the static IncompatibleHub field (preferrable) or "default".
+        // Instead, use the static IncompatibleHub field (preferable) or "default".
         // USB supports up to 127 devices, but that would require multiple hubs; the "per hub" port will never be >99.
         // And if you have more than 99 hubs on one system, then you win a prize! (but we're not going to support it...)
-        if (bus == 0 || bus > 99)
+        if (bus is 0 or > 99)
         {
             throw new ArgumentOutOfRangeException(nameof(bus));
         }
-        if (port == 0 || port > 99)
+        if (port is 0 or > 99)
         {
             throw new ArgumentOutOfRangeException(nameof(port));
         }
-        Bus = bus;
-        Port = port;
+        (Bus, Port) = (bus, port);
     }
 
-    public ushort Bus { get; }
-    public ushort Port { get; }
+    public ushort Bus
+    {
+        get;
+#if !NETSTANDARD
+        // Required for MSTest DynamicData (de)serialization.
+        init;
+#endif
+    }
+
+    public ushort Port
+    {
+        get;
+#if !NETSTANDARD
+        // Required for MSTest DynamicData (de)serialization.
+        init;
+#endif
+    }
 
     /// <summary>
     /// The special value 0-0 for hubs that do not expose a compatible busid.
@@ -50,7 +66,10 @@ public readonly record struct BusId
 #endif
     public bool IsIncompatibleHub => (Bus == 0) || (Port == 0);
 
-    public override readonly string ToString() => IsIncompatibleHub ? nameof(IncompatibleHub) : $"{Bus}-{Port}";
+    public override readonly string ToString()
+    {
+        return IsIncompatibleHub ? nameof(IncompatibleHub) : $"{Bus}-{Port}";
+    }
 
     /// <summary>
     /// NOTE: Valid inputs are x-y, where either x and y are between 1 and 65535, or both are 0.
@@ -80,16 +99,15 @@ public readonly record struct BusId
 
     public static BusId Parse(string input)
     {
-        if (!TryParse(input, out var busId))
-        {
-            throw new FormatException();
-        }
-        return busId;
+        return TryParse(input, out var busId) ? busId : throw new FormatException();
     }
 
     #region IComparable<BusId>
 
-    public readonly int CompareTo(BusId other) => ((uint)Bus << 16 | Port).CompareTo((uint)other.Bus << 16 | other.Port);
+    public readonly int CompareTo(BusId other)
+    {
+        return (((uint)Bus << 16) | Port).CompareTo(((uint)other.Bus << 16) | other.Port);
+    }
 
     public static bool operator <(BusId left, BusId right)
     {

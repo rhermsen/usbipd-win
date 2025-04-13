@@ -17,7 +17,7 @@ static class NewDev
         BOOL reboot = false;
         {
             // First, we must set a NULL driver to clear any existing Device Setup Class.
-            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList((Guid?)null, default);
+            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList(null, default);
             if (deviceInfoSet.IsInvalid)
             {
                 throw new Win32Exception(nameof(PInvoke.SetupDiCreateDeviceInfoList));
@@ -28,7 +28,8 @@ static class NewDev
             };
             unsafe // DevSkim: ignore DS172412
             {
-                PInvoke.SetupDiOpenDeviceInfo(deviceInfoSet, originalInstanceId, default, 0, &deviceInfoData).ThrowOnError(nameof(PInvoke.SetupDiOpenDeviceInfo));
+                PInvoke.SetupDiOpenDeviceInfo(deviceInfoSet, originalInstanceId, default, 0, &deviceInfoData)
+                    .ThrowOnError(nameof(PInvoke.SetupDiOpenDeviceInfo));
             }
             BOOL tmpReboot;
             unsafe // DevSkim: ignore DS172412
@@ -48,7 +49,7 @@ static class NewDev
 
         {
             // Now we can update the driver.
-            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList((Guid?)null, default);
+            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList(null, default);
             if (deviceInfoSet.IsInvalid)
             {
                 throw new Win32Exception(nameof(PInvoke.SetupDiCreateDeviceInfoList));
@@ -59,25 +60,29 @@ static class NewDev
             };
             unsafe // DevSkim: ignore DS172412
             {
-                PInvoke.SetupDiOpenDeviceInfo(deviceInfoSet, originalInstanceId, default, 0, &deviceInfoData).ThrowOnError(nameof(PInvoke.SetupDiOpenDeviceInfo));
+                PInvoke.SetupDiOpenDeviceInfo(deviceInfoSet, originalInstanceId, default, 0, &deviceInfoData)
+                    .ThrowOnError(nameof(PInvoke.SetupDiOpenDeviceInfo));
             }
             var deviceInstallParams = new SP_DEVINSTALL_PARAMS_W()
             {
                 cbSize = (uint)Marshal.SizeOf<SP_DEVINSTALL_PARAMS_W>(),
                 Flags = SETUP_DI_DEVICE_INSTALL_FLAGS.DI_ENUMSINGLEINF,
                 FlagsEx = SETUP_DI_DEVICE_INSTALL_FLAGS_EX.DI_FLAGSEX_ALLOWEXCLUDEDDRVS,
-                DriverPath = @$"{RegistryUtils.InstallationFolder ?? throw new UnexpectedResultException("not installed")}\Drivers\VBoxUSB.inf",
+                DriverPath = @$"{RegistryUtilities.InstallationFolder ?? throw new UnexpectedResultException("not installed")}\Drivers\VBoxUSB.inf",
             };
-            PInvoke.SetupDiSetDeviceInstallParams(deviceInfoSet, deviceInfoData, deviceInstallParams).ThrowOnError(nameof(PInvoke.SetupDiSetDeviceInstallParams));
+            PInvoke.SetupDiSetDeviceInstallParams(deviceInfoSet, deviceInfoData, deviceInstallParams)
+                .ThrowOnError(nameof(PInvoke.SetupDiSetDeviceInstallParams));
             unsafe // DevSkim: ignore DS172412
             {
-                PInvoke.SetupDiBuildDriverInfoList(deviceInfoSet, &deviceInfoData, SETUP_DI_DRIVER_TYPE.SPDIT_CLASSDRIVER).ThrowOnError(nameof(PInvoke.SetupDiBuildDriverInfoList));
+                PInvoke.SetupDiBuildDriverInfoList(deviceInfoSet, &deviceInfoData, SETUP_DI_DRIVER_TYPE.SPDIT_CLASSDRIVER)
+                    .ThrowOnError(nameof(PInvoke.SetupDiBuildDriverInfoList));
             }
             var driverInfoData = new SP_DRVINFO_DATA_V2_W()
             {
                 cbSize = (uint)Marshal.SizeOf<SP_DRVINFO_DATA_V2_W>(),
             };
-            PInvoke.SetupDiEnumDriverInfo(deviceInfoSet, deviceInfoData, SETUP_DI_DRIVER_TYPE.SPDIT_CLASSDRIVER, 0, ref driverInfoData).ThrowOnError(nameof(PInvoke.SetupDiEnumDriverInfo));
+            PInvoke.SetupDiEnumDriverInfo(deviceInfoSet, deviceInfoData, SETUP_DI_DRIVER_TYPE.SPDIT_CLASSDRIVER, 0, ref driverInfoData)
+                .ThrowOnError(nameof(PInvoke.SetupDiEnumDriverInfo));
             BOOL tmpReboot;
             unsafe // DevSkim: ignore DS172412
             {
@@ -104,7 +109,7 @@ static class NewDev
         unsafe
         {
             // First, we must set a NULL driver, just in case no default driver exists.
-            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList((Guid?)null, default);
+            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList(null, default);
             if (deviceInfoSet.IsInvalid)
             {
                 throw new Win32Exception(nameof(PInvoke.SetupDiCreateDeviceInfoList));
@@ -131,7 +136,7 @@ static class NewDev
         {
             // Now we let Windows install the default PnP driver.
             // We don't fail if no such driver can be found.
-            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList((Guid?)null, default);
+            using var deviceInfoSet = PInvoke.SetupDiCreateDeviceInfoList(null, default);
             if (deviceInfoSet.IsInvalid)
             {
                 throw new Win32Exception(nameof(PInvoke.SetupDiCreateDeviceInfoList));
@@ -150,7 +155,7 @@ static class NewDev
                     reboot = true;
                 }
             }
-            catch (Win32Exception ex) when ((uint)ex.NativeErrorCode == Interop.WinSDK.ERROR_NO_DRIVER_SELECTED)
+            catch (Win32Exception ex) when ((WIN32_ERROR)ex.NativeErrorCode == WIN32_ERROR.ERROR_NO_DRIVER_SELECTED)
             {
                 // Not really an error; this just means Windows does not have a default PnP driver for it.
                 // The device will be listed under "Other devices" with a question mark.

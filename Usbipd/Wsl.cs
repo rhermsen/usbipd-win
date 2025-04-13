@@ -7,9 +7,7 @@
 using System.CommandLine;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO.Compression;
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -30,22 +28,37 @@ static partial class Wsl
 
     const string WslMountPoint = "/var/run/usbipd-win";
 
-    public sealed record Distribution(string Name, bool IsDefault, uint Version, bool IsRunning);
+    internal sealed record Distribution(string Name, bool IsDefault, uint Version, bool IsRunning);
 
     static readonly char[] CtrlC = ['\x03'];
 
     static string? GetPossibleBlockReason()
     {
-        using var policy = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile");
-        if (policy is not null)
+        using var publicProfile = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile");
+        if (publicProfile is not null)
         {
-            if (policy.GetValue("DoNotAllowExceptions") is int doNotAllowExceptions && doNotAllowExceptions != 0)
+            if (publicProfile.GetValue("DoNotAllowExceptions") is int doNotAllowExceptions && doNotAllowExceptions != 0)
             {
                 return "A group policy blocks all incoming connections for the public network profile, which includes WSL.";
             }
-            if (policy.GetValue("AllowLocalPolicyMerge") is int allowLocalPolicyMerge && allowLocalPolicyMerge == 0)
+            if (publicProfile.GetValue("AllowLocalPolicyMerge") is int allowLocalPolicyMerge && allowLocalPolicyMerge == 0)
             {
                 return "A group policy blocks the 'usbipd' firewall rule for the public network profile, which includes WSL.";
+            }
+        }
+        else
+        {
+            // Only if PublicProfile does not exist, the StandardProfile settings are used.
+            // See: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpfas/abe4eb0f-e3a0-48cc-bde3-5dc89b81b40b
+            using var standardProfile = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile");
+            if (standardProfile is not null)
+            {
+                if (standardProfile.GetValue("DoNotAllowExceptions") is int doNotAllowExceptions && doNotAllowExceptions != 0)
+                {
+                    return "A group policy blocks all incoming connections for the standard network profile, which includes WSL.";
+                }
+                // AllowLocalPolicyMerge is not valid for the StandardProfile
+                // See: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpfas/2c979624-900a-4b6e-b4ef-09b387cd62ab
             }
         }
 
@@ -62,7 +75,8 @@ static partial class Wsl
     }
 
     static async Task<(int ExitCode, string StandardOutput, string StandardError, MemoryStream BinaryOutput)>
-        RunWslAsync((string distribution, string directory)? linux, Action<string, bool>? outputCallback, bool binaryOutput, CancellationToken cancellationToken, params string[] arguments)
+        RunWslAsync((string distribution, string directory)? linux, Action<string, bool>? outputCallback, bool binaryOutput,
+        CancellationToken cancellationToken, params string[] arguments)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -188,7 +202,8 @@ static partial class Wsl
     /// <summary>
     /// BusId has already been checked, and the server is running.
     /// </summary>
-    public static async Task<ExitCode> Attach(BusId busId, bool autoAttach, string? distribution, IConsole console, CancellationToken cancellationToken)
+    public static async Task<ExitCode> Attach(BusId busId, bool autoAttach, string? distribution, IPAddress? hostAddress,
+        IConsole console, CancellationToken cancellationToken)
     {
         var wslWindowsPath = Path.Combine(Path.GetDirectoryName(Environment.ProcessPath)!, "WSL");
         if (!Path.Exists(wslWindowsPath))
@@ -236,7 +251,8 @@ static partial class Wsl
             // check (b1)
             if (distributions.FirstOrDefault(d => d.Name.Equals(distribution, StringComparison.OrdinalIgnoreCase)) is not Distribution selectedDistribution)
             {
-                console.ReportError($"The WSL distribution '{distribution}' does not exist. Learn how to list all installed distributions at {ListDistributionsUrl}.");
+                console.ReportError(
+                    $"The WSL distribution '{distribution}' does not exist. Learn how to list all installed distributions at {ListDistributionsUrl}.");
                 return ExitCode.Failure;
             }
 
@@ -311,65 +327,26 @@ static partial class Wsl
 
         // Check: WSL kernel must be USBIP capable.
         {
-            var wslResult = await RunWslAsync((distribution, "/"), null, true, cancellationToken, "cat", "/proc/config.gz");
+            var wslResult = await RunWslAsync((distribution, "/"), null, true, cancellationToken, "/bin/ls", "--directory", "/sys/bus/platform/drivers/vhci_hcd");
             if (wslResult.ExitCode != 0)
             {
-                console.ReportError($"Unable to get WSL kernel configuration.");
-                return ExitCode.Failure;
-            }
-            using var gunzipStream = new GZipStream(wslResult.BinaryOutput, CompressionMode.Decompress);
-            using var reader = new StreamReader(gunzipStream, Encoding.UTF8);
-            var config = await reader.ReadToEndAsync(cancellationToken);
-            if (config.Contains("CONFIG_USBIP_VHCI_HCD=y"))
-            {
-                // USBIP client built-in, we're done
-            }
-            else if (config.Contains("CONFIG_USBIP_VHCI_HCD=m"))
-            {
-                // USBIP client built as a module
-
-                // Expected output:
-                //
-                //    ...
-                //    vhci_hcd 61440 0 - Live 0x0000000000000000
-                //    ...
-                wslResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "cat", "/proc/modules");
+                // No USBIP driver (yet), check for loadable module support.
+                wslResult = await RunWslAsync((distribution, "/"), null, true, cancellationToken, "/bin/ls", "/proc/modules");
                 if (wslResult.ExitCode != 0)
                 {
-                    console.ReportError($"Unable to get WSL kernel modules.");
+                    // No USBIP driver, and no loadable module support.
+                    // Must be an old WSL version, or a misconfigured custom kernel.
+                    console.ReportError($"WSL kernel is not USBIP capable; update with 'wsl --update'.");
                     return ExitCode.Failure;
                 }
-                if (!wslResult.StandardOutput.Contains("vhci_hcd"))
+                console.ReportInfo($"Loading vhci_hcd module.");
+                wslResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "/sbin/modprobe", "vhci_hcd");
+                if (wslResult.ExitCode != 0)
                 {
-                    console.ReportInfo($"Loading vhci_hcd module.");
-                    wslResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "modprobe", "vhci_hcd");
-                    if (wslResult.ExitCode != 0)
-                    {
-                        console.ReportError($"Loading vhci_hcd failed.");
-                        return ExitCode.Failure;
-                    }
-                    // Expected output:
-                    //
-                    //    ...
-                    //    vhci_hcd 61440 0 - Live 0x0000000000000000
-                    //    ...
-                    wslResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "cat", "/proc/modules");
-                    if (wslResult.ExitCode != 0)
-                    {
-                        console.ReportError($"Unable to get WSL kernel modules.");
-                        return ExitCode.Failure;
-                    }
-                    if (!wslResult.StandardOutput.Contains("vhci_hcd"))
-                    {
-                        console.ReportError($"Module vhci_hcd not loaded.");
-                        return ExitCode.Failure;
-                    }
+                    // Must be an old WSL version, or a misconfigured custom kernel.
+                    console.ReportError($"Loading vhci_hcd failed; update with 'wsl --update'.");
+                    return ExitCode.Failure;
                 }
-            }
-            else
-            {
-                console.ReportError($"WSL kernel is not USBIP capable; update with 'wsl --update'.");
-                return ExitCode.Failure;
             }
         }
 
@@ -404,95 +381,64 @@ static partial class Wsl
             }
         }
 
-        // Now find out the IP address of the host.
-        IPAddress hostAddress;
+        // Now find out the IP address of the host (if not explicitly provided by the user).
+        if (hostAddress is null)
         {
             var wslResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "/bin/wslinfo", "--networking-mode");
-            if (wslResult.ExitCode == 0 && wslResult.StandardOutput.Trim() == "mirrored")
+            string networkingMode;
+            if (wslResult.ExitCode == 0)
             {
-                // mirrored networking mode ... we're done
-                hostAddress = IPAddress.Loopback;
+                networkingMode = wslResult.StandardOutput.Trim();
+                console.ReportInfo($"Detected networking mode '{networkingMode}'.");
             }
             else
             {
-                // Get all non-loopback unicast IPv4 addresses for WSL.
-                var clientAddresses = new List<IPAddress>();
-                {
-                    // We use 'cat /proc/net/fib_trie', where we assume 'cat' is available on all distributions and /proc/net/fib_trie is supported by the WSL kernel.
-                    var ipResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "cat", "/proc/net/fib_trie");
+                networkingMode = "nat";
+                console.ReportWarning($"Unable to determine networking mode, assuming 'nat'.");
+            }
+            switch (networkingMode)
+            {
+                case "none":
+                case "virtioproxy":
+                default:
+                    console.ReportError($"Networking mode '{networkingMode}' is not supported.");
+                    return ExitCode.Failure;
+                case "mirrored":
+                    hostAddress = IPAddress.Loopback;
+                    break;
+                case "nat":
+                    // See https://learn.microsoft.com/en-us/windows/wsl/networking
+                    // We need to get the default gateway address.
+                    // We use 'cat /proc/net/route', where we assume 'cat' is available on all distributions
+                    //      and /proc/net/route is supported by the WSL kernel.
+                    var ipResult = await RunWslAsync((distribution, "/"), null, false, cancellationToken, "/bin/cat", "/proc/net/route");
                     if (ipResult.ExitCode == 0)
                     {
                         // Example output:
                         //
-                        // Main:
-                        //   +-- 0.0.0.0/0 3 0 5
-                        //      |-- 0.0.0.0
-                        //         /0 universe UNICAST
-                        //      +-- 127.0.0.0/8 2 0 2
-                        //         +-- 127.0.0.0/31 1 0 0
-                        //            |-- 127.0.0.0
-                        //               /32 link BROADCAST
-                        //               /8 host LOCAL
-                        //            |-- 127.0.0.1
-                        //               /32 host LOCAL
-                        //         |-- 127.255.255.255
-                        //            /32 link BROADCAST
-                        // ...
+                        // Iface   Destination     Gateway         Flags   RefCnt  Use     Metric  Mask            MTU     Window  IRTT
                         //
-                        // We are interested in all entries like:
+                        // eth0    00000000        01E01AAC        0003    0       0       0       00000000        0       0       0
                         //
-                        //            |-- 127.0.0.1
-                        //               /32 host LOCAL
-                        //
-                        // These are the interface addresses.
+                        // eth0    00E01AAC        00000000        0001    0       0       0       00F0FFFF        0       0       0
 
-                        for (var match = LocalAddressRegex().Match(ipResult.StandardOutput); match.Success; match = match.NextMatch())
+                        for (var match = RouteRegex().Match(ipResult.StandardOutput); match.Success; match = match.NextMatch())
                         {
-                            if (!IPAddress.TryParse(match.Groups[1].Value, out var clientAddress))
+                            if (uint.TryParse(match.Groups[2].Value, NumberStyles.HexNumber, null, out var destination) && destination == 0
+                                && uint.TryParse(match.Groups[3].Value, NumberStyles.HexNumber, null, out var gateway))
                             {
-                                continue;
-                            }
-                            if (clientAddress.AddressFamily != AddressFamily.InterNetwork)
-                            {
-                                // For simplicity, we only use IPv4.
-                                continue;
-                            }
-                            if (IsOnSameIPv4Network(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), clientAddress))
-                            {
-                                // We are *not* in mirrored network mode, so ignore loopback addresses.
-                                continue;
-                            }
-                            // Only add unique entries. List is not going to be long, so a linear search is fine.
-                            if (!clientAddresses.Contains(clientAddress))
-                            {
-                                clientAddresses.Add(clientAddress);
+                                hostAddress = new IPAddress(gateway);
+                                break;
                             }
                         }
                     }
-                }
-                if (clientAddresses.Count == 0)
-                {
-                    console.ReportError($"WSL does not appear to have network connectivity; try `wsl --shutdown` and then restart WSL.");
-                    return ExitCode.Failure;
-                }
-
-                // Get all non-loopback unicast IPv4 addresses (with their mask) for the host.
-                var hostAddresses = NetworkInterface.GetAllNetworkInterfaces()
-                    .Where(ni => ni.OperationalStatus == OperationalStatus.Up)
-                    .Select(ni => ni.GetIPProperties().UnicastAddresses)
-                    .SelectMany(uac => uac)
-                    .Where(ua => ua.Address.AddressFamily == AddressFamily.InterNetwork)
-                    .Where(ua => !IsOnSameIPv4Network(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), ua.Address));
-
-                // Find any match; we'll just take the first.
-                if (hostAddresses.FirstOrDefault(ha => clientAddresses.Any(ca => IsOnSameIPv4Network(ha.Address, ha.IPv4Mask, ca))) is not UnicastIPAddressInformation matchHost)
-                {
-                    console.ReportError("The host IP address for the WSL virtual switch could not be found.");
-                    return ExitCode.Failure;
-                }
-
-                hostAddress = matchHost.Address;
+                    break;
             }
+        }
+        if (hostAddress is null)
+        {
+            console.ReportError("Unable to determine host address.");
+            return ExitCode.Failure;
         }
 
         console.ReportInfo($"Using IP address {hostAddress} to reach the host.");
@@ -507,7 +453,8 @@ static partial class Wsl
             try
             {
                 // With minimal requirements (bash only) try to connect from WSL to our server.
-                var pingResult = await RunWslAsync((distribution, "/"), null, false, linkedTokenSource.Token, "bash", "-c", $"echo < /dev/tcp/{hostAddress}/{Interop.UsbIp.USBIP_PORT}");
+                var pingResult = await RunWslAsync((distribution, "/"), null, false, linkedTokenSource.Token, "/bin/bash", "-c",
+                    $"echo < /dev/tcp/{hostAddress}/{Interop.UsbIp.USBIP_PORT}");
                 if (pingResult.StandardError.Contains("refused"))
                 {
                     // If the output contains "refused", then the test was executed and failed, irrespective of the exit code.
@@ -577,14 +524,16 @@ static partial class Wsl
             if (line.Contains("Device busy"))
             {
                 // We have already checked that the device is not attached to some other client.
-                console.ReportWarning("The device appears to be used by Windows; stop the software using the device, or bind the device using the '--force' option.");
+                console.ReportWarning(
+                    "The device appears to be used by Windows; stop the software using the device, or bind the device using the '--force' option.");
             }
         }
 
         // Finally, call 'usbip attach', or run the auto-attach.sh script.
         if (!autoAttach)
         {
-            var wslResult = await RunWslAsync((distribution, WslMountPoint), FilterUsbip, false, cancellationToken, "./usbip", "attach", $"--remote={hostAddress}", $"--busid={busId}");
+            var wslResult = await RunWslAsync((distribution, WslMountPoint), FilterUsbip, false, cancellationToken, "./usbip", "attach",
+                $"--remote={hostAddress}", $"--busid={busId}");
             if (wslResult.ExitCode != 0)
             {
                 console.ReportError($"Failed to attach device with busid '{busId}'.");
@@ -595,7 +544,8 @@ static partial class Wsl
         {
             console.ReportInfo("Starting endless attach loop; press Ctrl+C to quit.");
 
-            _ = await RunWslAsync((distribution, WslMountPoint), FilterUsbip, false, cancellationToken, "./auto-attach.sh", hostAddress.ToString(), busId.ToString());
+            _ = await RunWslAsync((distribution, WslMountPoint), FilterUsbip, false, cancellationToken, "./auto-attach.sh", hostAddress.ToString(),
+                busId.ToString());
             // This process always ends in failure, as it is supposed to run an endless loop.
             // This may be intended by the user (Ctrl+C, WSL shutdown), others may be real errors.
             // There is no way to tell the difference...
@@ -626,8 +576,8 @@ static partial class Wsl
     [GeneratedRegex(@"^( |\*) (.+) +([a-zA-Z]+) +([0-9])+ *$")]
     private static partial Regex WslListDistributionRegex();
 
-    [GeneratedRegex(@"\|--\s+(\S+)\s+/32 host LOCAL")]
-    private static partial Regex LocalAddressRegex();
+    [GeneratedRegex(@"\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*")]
+    private static partial Regex RouteRegex();
 
     [GeneratedRegex(@"^[a-zA-Z]:\\")]
     private static partial Regex LocalDriveRegex();

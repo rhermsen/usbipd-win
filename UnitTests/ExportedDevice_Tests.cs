@@ -22,7 +22,7 @@ sealed class ExportedDevice_Tests
         DeviceProtocol: 0x67,
         ConfigurationValue: 3,
         NumConfigurations: 4,
-        Interfaces: new() { (1, 2, 3), (4, 5, 6) }
+        Interfaces: [(1, 2, 3), (4, 5, 6)]
     );
 
     /// <summary>
@@ -42,12 +42,12 @@ sealed class ExportedDevice_Tests
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        // busid (32 bytes, text)
+        // busId (32 bytes, text)
         (byte)'3', (byte)'-', (byte)'4', (byte)'2', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        // busnum (4 bytes, big endian)
+        // busNum (4 bytes, big endian)
         0, 0, 0, 3,
-        // devnum (4 bytes, big endian)
+        // devNum (4 bytes, big endian)
         0, 0, 0, 42,
         // speed (4 bytes, enum, big endian)
         0, 0, 0, (byte)UsbDeviceSpeed.USB_SPEED_SUPER_PLUS,

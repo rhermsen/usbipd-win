@@ -9,6 +9,9 @@ using System.CommandLine.Completions;
 using System.CommandLine.Help;
 using System.CommandLine.Parsing;
 using System.Diagnostics;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Reflection;
 using Usbipd.Automation;
 using static Usbipd.ConsoleTools;
@@ -51,6 +54,16 @@ static class Program
         return vidPid;
     }
 
+    static IPAddress ParseIPAddress(ArgumentResult argumentResult)
+    {
+        if (!IPAddress.TryParse(argumentResult.Tokens[0].Value, out var ipAddress))
+        {
+            argumentResult.ErrorMessage = LocalizationResources.Instance.ArgumentConversionCannotParseForOption(argumentResult.Tokens[0].Value,
+                (argumentResult.Parent as OptionResult)?.Token?.Value ?? string.Empty, typeof(IPAddress));
+        }
+        return ipAddress ?? IPAddress.None;
+    }
+
     static string OneOfRequiredText(params Option[] options)
     {
         Debug.Assert(options.Length >= 2);
@@ -73,6 +86,19 @@ static class Program
         return $"At least one of the options {list} is required.";
     }
 
+    static string OptionRequiresText(Option option, params Option[] options)
+    {
+        Debug.Assert(options.Length >= 1);
+
+        var names = options.Select(o => $"'--{o.Name}'").ToArray();
+        var list = names.Length == 1
+            ? names[0]
+            : names.Length == 2
+                ? $"{names[0]} and {names[1]}"
+                : string.Join(", ", names[0..(names.Length - 1)]) + ", and " + names[^1];
+        return $"Option '--{option.Name}' requires {list}.";
+    }
+
     static void ValidateOneOf(CommandResult commandResult, params Option[] options)
     {
         Debug.Assert(options.Length >= 2);
@@ -90,6 +116,16 @@ static class Program
         if (!options.Any(option => commandResult.FindResultFor(option) is not null))
         {
             commandResult.ErrorMessage = AtLeastOneOfRequiredText(options);
+        }
+    }
+
+    static void ValidateOptionRequires(CommandResult commandResult, Option option, params Option[] options)
+    {
+        Debug.Assert(options.Length >= 1);
+
+        if (commandResult.FindResultFor(option) is not null && options.Any(option => commandResult.FindResultFor(option) is null))
+        {
+            commandResult.ErrorMessage = OptionRequiresText(option, options);
         }
     }
 
@@ -184,6 +220,38 @@ static class Program
             }.AddCompletions(completionContext => CompletionGuard(completionContext, () =>
                 UsbDevice.GetAll().Where(d => d.BusId.HasValue).GroupBy(d => d.HardwareId).Select(g => g.Key.ToString())));
             //
+            //  attach [--host-ip <IPADDRESS>]
+            //
+            var hostIpOption = new Option<IPAddress>(
+                // NOTE: the alias '-h' is already for '--help' and '-i' is already for '--hardware-id'.
+                aliases: ["--host-ip", "-o"],
+                parseArgument: ParseIPAddress
+            )
+            {
+                ArgumentHelpName = "IPADDRESS",
+                Description = "Use <IPADDRESS> for WSL to connect back to the host",
+            }.AddCompletions(completionContext => CompletionGuard(completionContext, () =>
+                // Get all non-loopback unicast IPv4 addresses.
+                NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(ni => ni.OperationalStatus == OperationalStatus.Up)
+                    .Select(ni => ni.GetIPProperties().UnicastAddresses)
+                    .SelectMany(uac => uac)
+                    .Where(ua => ua.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Where(ua => ua.Address.GetAddressBytes()[0] != 127)
+                    .Select(ua => ua.Address.ToString())
+                    .Order()
+                    .Distinct()));
+            //
+            //  attach [--unplugged]
+            //
+            var unpluggedOption = new Option<bool>(
+                aliases: ["--unplugged", "-u"]
+            )
+            {
+                Description = "Allows auto-attaching a currently unplugged device",
+                Arity = ArgumentArity.Zero,
+            };
+            //
             //  attach
             //
             var attachCommand = new Command("attach", "Attach a USB device to a client\0"
@@ -191,35 +259,38 @@ static class Program
                 + "\n"
                 + "Currently, only WSL is supported. Other clients need to perform an attach using client-side tooling.\n"
                 + "\n"
-                + OneOfRequiredText(busIdOption, hardwareIdOption))
+                + OneOfRequiredText(busIdOption, hardwareIdOption) + '\n'
+                + OptionRequiresText(unpluggedOption, autoAttachOption, busIdOption))
                 {
                     autoAttachOption,
                     busIdOption,
                     hardwareIdOption,
                     wslOption,
+                    hostIpOption,
+                    unpluggedOption,
                 };
             attachCommand.AddValidator(commandResult =>
             {
                 ValidateOneOf(commandResult, busIdOption, hardwareIdOption);
             });
+            attachCommand.AddValidator(commandResult =>
+            {
+                ValidateOptionRequires(commandResult, unpluggedOption, autoAttachOption, busIdOption);
+            });
             attachCommand.SetHandler(async invocationContext =>
             {
-                if (invocationContext.ParseResult.HasOption(busIdOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.AttachWsl(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                invocationContext.ExitCode = invocationContext.ParseResult.HasOption(busIdOption)
+                    ? (int)await commandHandlers.AttachWsl(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                            invocationContext.ParseResult.HasOption(autoAttachOption),
+                            invocationContext.ParseResult.HasOption(unpluggedOption),
+                            invocationContext.ParseResult.GetValueForOption(wslOption),
+                            invocationContext.ParseResult.GetValueForOption(hostIpOption),
+                            invocationContext.Console, invocationContext.GetCancellationToken())
+                    : (int)await commandHandlers.AttachWsl(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
                             invocationContext.ParseResult.HasOption(autoAttachOption),
                             invocationContext.ParseResult.GetValueForOption(wslOption),
+                            invocationContext.ParseResult.GetValueForOption(hostIpOption),
                             invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.AttachWsl(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
-                            invocationContext.ParseResult.HasOption(autoAttachOption),
-                            invocationContext.ParseResult.GetValueForOption(wslOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
             });
             rootCommand.AddCommand(attachCommand);
         }
@@ -279,20 +350,13 @@ static class Program
             });
             bindCommand.SetHandler(async invocationContext =>
             {
-                if (invocationContext.ParseResult.HasOption(busIdOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Bind(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                invocationContext.ExitCode = invocationContext.ParseResult.HasOption(busIdOption)
+                    ? (int)await commandHandlers.Bind(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                            invocationContext.ParseResult.HasOption(forceOption),
+                            invocationContext.Console, invocationContext.GetCancellationToken())
+                    : (int)await commandHandlers.Bind(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
                             invocationContext.ParseResult.HasOption(forceOption),
                             invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Bind(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
-                            invocationContext.ParseResult.HasOption(forceOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
             });
             rootCommand.AddCommand(bindCommand);
         }
@@ -351,23 +415,13 @@ static class Program
             });
             detachCommand.SetHandler(async invocationContext =>
             {
-                if (invocationContext.ParseResult.HasOption(allOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.DetachAll(invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else if (invocationContext.ParseResult.HasOption(busIdOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Detach(invocationContext.ParseResult.GetValueForOption(busIdOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Detach(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
+                invocationContext.ExitCode = invocationContext.ParseResult.HasOption(allOption)
+                    ? (int)await commandHandlers.DetachAll(invocationContext.Console, invocationContext.GetCancellationToken())
+                    : invocationContext.ParseResult.HasOption(busIdOption)
+                        ? (int)await commandHandlers.Detach(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                                invocationContext.Console, invocationContext.GetCancellationToken())
+                        : (int)await commandHandlers.Detach(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
+                                invocationContext.Console, invocationContext.GetCancellationToken());
             });
             rootCommand.AddCommand(detachCommand);
         }
@@ -449,7 +503,7 @@ static class Program
                 )
                 {
                     ArgumentHelpName = "BUSID",
-                    Description = "Share device having <BUSID>",
+                    Description = "Add a policy for device having <BUSID>",
                 }.AddCompletions(CompatibleBusIdCompletions);
                 //
                 //  policy add [--hardware-id <VID>:<PID>]
@@ -461,7 +515,7 @@ static class Program
                 )
                 {
                     ArgumentHelpName = "VID:PID",
-                    Description = "Attach device having <VID>:<PID>",
+                    Description = "Add a policy for device having <VID>:<PID>",
                 }.AddCompletions(completionContext => CompletionGuard(completionContext, () =>
                     UsbDevice.GetAll().GroupBy(d => d.HardwareId).Select(g => g.Key.ToString())));
                 //
@@ -531,7 +585,7 @@ static class Program
                     ArgumentHelpName = "GUID",
                     Description = "Remove the policy rule having <GUID>",
                 }.AddCompletions(completionContext => CompletionGuard(completionContext, () =>
-                    RegistryUtils.GetPolicyRules().Select(r => r.Key.ToString("D"))));
+                    RegistryUtilities.GetPolicyRules().Select(r => r.Key.ToString("D"))));
                 //
                 //  policy remove
                 //
@@ -549,17 +603,10 @@ static class Program
                 });
                 removeCommand.SetHandler(async invocationContext =>
                 {
-                    if (invocationContext.ParseResult.HasOption(allOption))
-                    {
-                        invocationContext.ExitCode = (int)
-                            await commandHandlers.PolicyRemoveAll(invocationContext.Console, invocationContext.GetCancellationToken());
-                    }
-                    else
-                    {
-                        invocationContext.ExitCode = (int)
-                            await commandHandlers.PolicyRemove(invocationContext.ParseResult.GetValueForOption(guidOption),
+                    invocationContext.ExitCode = invocationContext.ParseResult.HasOption(allOption)
+                        ? (int)await commandHandlers.PolicyRemoveAll(invocationContext.Console, invocationContext.GetCancellationToken())
+                        : (int)await commandHandlers.PolicyRemove(invocationContext.ParseResult.GetValueForOption(guidOption),
                                 invocationContext.Console, invocationContext.GetCancellationToken());
-                    }
                 });
                 policyCommand.AddCommand(removeCommand);
             }
@@ -641,7 +688,7 @@ static class Program
                 ArgumentHelpName = "GUID",
                 Description = "Stop sharing persisted device having <GUID>",
             }.AddCompletions(completionContext => CompletionGuard(completionContext, () =>
-                RegistryUtils.GetBoundDevices().Where(d => !d.BusId.HasValue).Select(d => d.Guid.GetValueOrDefault().ToString("D"))));
+                RegistryUtilities.GetBoundDevices().Where(d => !d.BusId.HasValue).Select(d => d.Guid.GetValueOrDefault().ToString("D"))));
             //
             //  unbind [--hardware-id <VID>:<PID>]
             //
@@ -676,29 +723,16 @@ static class Program
             });
             unbindCommand.SetHandler(async invocationContext =>
             {
-                if (invocationContext.ParseResult.HasOption(allOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.UnbindAll(invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else if (invocationContext.ParseResult.HasOption(busIdOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(busIdOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else if (invocationContext.ParseResult.HasOption(guidOption))
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(guidOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
-                else
-                {
-                    invocationContext.ExitCode = (int)
-                        await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
-                            invocationContext.Console, invocationContext.GetCancellationToken());
-                }
+                invocationContext.ExitCode = invocationContext.ParseResult.HasOption(allOption)
+                    ? (int)await commandHandlers.UnbindAll(invocationContext.Console, invocationContext.GetCancellationToken())
+                    : invocationContext.ParseResult.HasOption(busIdOption)
+                        ? (int)await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(busIdOption),
+                                invocationContext.Console, invocationContext.GetCancellationToken())
+                        : invocationContext.ParseResult.HasOption(guidOption)
+                            ? (int)await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(guidOption),
+                                    invocationContext.Console, invocationContext.GetCancellationToken())
+                            : (int)await commandHandlers.Unbind(invocationContext.ParseResult.GetValueForOption(hardwareIdOption),
+                                    invocationContext.Console, invocationContext.GetCancellationToken());
             });
             rootCommand.AddCommand(unbindCommand);
         }
@@ -724,7 +758,8 @@ static class Program
             });
             wslCommand.SetHandler(invocationContext =>
             {
-                ConsoleTools.ReportError(invocationContext.Console, $"The 'wsl' subcommand has been removed. Learn about the new syntax at {Wsl.AttachWslUrl}.");
+                ConsoleTools.ReportError(invocationContext.Console,
+                    $"The 'wsl' subcommand has been removed. Learn about the new syntax at {Wsl.AttachWslUrl}.");
                 invocationContext.ExitCode = (int)ExitCode.ParseError;
             });
             rootCommand.AddCommand(wslCommand);
@@ -809,11 +844,7 @@ static class Program
         try
         {
             var exitCode = (ExitCode)commandLine.InvokeAsync(args, optionalTestConsole).Result;
-            if (!Enum.IsDefined(exitCode))
-            {
-                throw new UnexpectedResultException($"Unknown exit code {exitCode}");
-            }
-            return exitCode;
+            return Enum.IsDefined(exitCode) ? exitCode : throw new UnexpectedResultException($"Unknown exit code {exitCode}");
         }
         catch (AggregateException ex) when (ex.Flatten().InnerExceptions.Any(e => e is OperationCanceledException))
         {

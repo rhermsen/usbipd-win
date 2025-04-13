@@ -12,7 +12,7 @@ using Windows.Win32.Storage.FileSystem;
 
 namespace Usbipd;
 
-sealed class DeviceFile : IDisposable
+sealed partial class DeviceFile : IDisposable
 {
     public DeviceFile(string fileName)
     {
@@ -56,7 +56,8 @@ sealed class DeviceFile : IDisposable
                 {
                     if (exactOutput && ((output?.Length ?? 0) != numBytes))
                     {
-                        taskCompletionSource.SetException(new ProtocolViolationException($"DeviceIoControl returned {numBytes} bytes, expected {output?.Length ?? 0}"));
+                        taskCompletionSource.SetException(
+                            new ProtocolViolationException($"DeviceIoControl returned {numBytes} bytes, expected {output?.Length ?? 0}"));
                     }
                     else
                     {
